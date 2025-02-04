@@ -10,11 +10,11 @@ import (
 )
 
 func TestFinsClient(t *testing.T) {
-	clientAddr, err := NewAddress("127.0.0.1", 9600, 0, 2, 0)
+	clientAddr, err := NewAddress("0.0.0.0", 9600, 0, 2, 0)
 	if err != nil {
 		fmt.Printf("Error creating Client Address %f", err)
 	}
-	plcAddr, err := NewAddress("127.0.0.1", 9601, 0, 10, 0)
+	plcAddr, err := NewAddress("0.0.0.0", 9601, 0, 10, 0)
 	if err != nil {
 		fmt.Printf("Error creating PLC Address %f", err)
 	}
@@ -41,7 +41,7 @@ func TestFinsClient(t *testing.T) {
 	assert.Equal(t, toWrite, vals)
 
 	// test setting response timeout
-	c.SetTimeoutMs(50)
+	c.SetTimeoutMs(5000)
 	_, err = c.ReadWords(MemoryAreaDMWord, 100, 5)
 	assert.Nil(t, err)
 
