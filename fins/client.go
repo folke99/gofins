@@ -113,12 +113,20 @@ func (c *Client) ReadWords(memoryArea byte, address uint16, readCount uint16) ([
 	return data, nil
 }
 
-// ReadBytes Reads bytes from the PLC data area
-func (c *Client) ReadBytes(memoryArea byte, address uint16, readCount uint16) ([]byte, error) {
-	if checkIsWordMemoryArea(memoryArea) == false {
+func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([]byte, error) {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return nil, IncompatibleMemoryAreaError{memoryArea}
 	}
-	command := readCommand(memAddr(memoryArea, address), readCount)
+
+	// Ensure read count is word-aligned
+	if byteCount%2 != 0 {
+		return nil, fmt.Errorf("requested byte count must be a multiple of 2 for word-based memory area")
+	}
+
+	// Convert bytes to words (FINS protocol expects word count)
+	wordCount := byteCount / 2
+
+	command := readCommand(memAddr(memoryArea, address), wordCount)
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
 	if e != nil {
@@ -216,12 +224,20 @@ func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
 	return checkResponse(c.sendCommand(command))
 }
 
-// WriteBytes Writes bytes array to the PLC data area
 func (c *Client) WriteBytes(memoryArea byte, address uint16, b []byte) error {
-	if checkIsWordMemoryArea(memoryArea) == false {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
-	command := writeCommand(memAddr(memoryArea, address), uint16(len(b)), b)
+
+	// Ensure byte slice is an even length (word-aligned)
+	if len(b)%2 != 0 {
+		return fmt.Errorf("data length must be a multiple of 2 for word-based memory area")
+	}
+
+	// Convert bytes to words (FINS protocol expects word count)
+	wordCount := uint16(len(b) / 2)
+
+	command := writeCommand(memAddr(memoryArea, address), wordCount, b)
 	return checkResponse(c.sendCommand(command))
 }
 
@@ -363,7 +379,7 @@ func (c *Client) listenLoop() {
 			return
 		}
 
-		// Read length header (4 bytes)
+		// Read 4-byte length header
 		lengthBuf := make([]byte, 4)
 		_, err := io.ReadFull(c.reader, lengthBuf)
 		if err != nil {
@@ -376,6 +392,8 @@ func (c *Client) listenLoop() {
 
 		// Get message length
 		messageLength := binary.BigEndian.Uint32(lengthBuf)
+		log.Printf("Incoming message length: %d", messageLength)
+
 		if messageLength > MAX_PACKET_SIZE {
 			log.Printf("Message length %d exceeds maximum size", messageLength)
 			continue
@@ -392,8 +410,13 @@ func (c *Client) listenLoop() {
 			continue
 		}
 
+		// Detailed logging
+		log.Printf("Received message bytes: % x", messageBuf)
+
 		// Decode and process the response
 		ans := decodeResponse(messageBuf)
+
+		// Use non-blocking channel send
 		select {
 		case c.resp[ans.header.serviceID] <- ans:
 		default:

@@ -1,3 +1,4 @@
+#Requirements
 ### Scope
 
 The thesis will focus on analyzing and improving the existing Golang package for the FINS protocol, which is used to integrate Omron PLCs into industrial automation systems. The scope will include identifying key deficiencies in the current implementation, proposing enhancements to improve reliability, performance, and scalability, and implementing proof-of-concept solutions.

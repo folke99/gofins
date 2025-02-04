@@ -2,13 +2,14 @@ package fins
 
 import (
 	"encoding/binary"
+	"log"
 )
 
 // request A FINS command request
 type request struct {
-	header Header
+	header      Header
 	commandCode uint16
-	data   []byte
+	data        []byte
 }
 
 // response A FINS command response
@@ -72,10 +73,16 @@ func decodeMemoryAddress(data []byte) memoryAddress {
 }
 
 func decodeRequest(bytes []byte) request {
+	// Check if there are enough bytes to decode
+	if len(bytes) < 12 {
+		log.Printf("Insufficient bytes for request decoding: %d", len(bytes))
+		return request{}
+	}
+
 	return request{
-		decodeHeader(bytes[0:10]),
-		binary.BigEndian.Uint16(bytes[10:12]),
-		bytes[12:],
+		header:      decodeHeader(bytes[0:10]),
+		commandCode: binary.BigEndian.Uint16(bytes[10:12]),
+		data:        bytes[12:],
 	}
 }
 
@@ -103,15 +110,31 @@ const (
 	icfResponseRequiredBit byte = 0
 )
 
+// func decodeHeader(bytes []byte) Header {
+// 	header := Header{}
+// 	icf := bytes[0]
+// 	if icf&1<<icfResponseRequiredBit == 0 {
+// 		header.responseRequired = true
+// 	}
+// 	if icf&1<<icfMessageTypeBit == 0 {
+// 		header.messageType = MessageTypeCommand
+// 	} else {
+// 		header.messageType = MessageTypeResponse
+// 	}
+// 	header.gatewayCount = bytes[2]
+// 	header.dst = finsAddress{bytes[3], bytes[4], bytes[5]}
+// 	header.src = finsAddress{bytes[6], bytes[7], bytes[8]}
+// 	header.serviceID = bytes[9]
+
+// 	return header
+// }
+
 func decodeHeader(bytes []byte) Header {
 	header := Header{}
 	icf := bytes[0]
-	if icf&1<<icfResponseRequiredBit == 0 {
-		header.responseRequired = true
-	}
-	if icf&1<<icfMessageTypeBit == 0 {
-		header.messageType = MessageTypeCommand
-	} else {
+	header.responseRequired = (icf & (1 << icfResponseRequiredBit)) == 0
+	header.messageType = MessageTypeCommand
+	if icf&(1<<icfMessageTypeBit) != 0 {
 		header.messageType = MessageTypeResponse
 	}
 	header.gatewayCount = bytes[2]
@@ -122,11 +145,28 @@ func decodeHeader(bytes []byte) Header {
 	return header
 }
 
+// func encodeHeader(h Header) []byte {
+// 	var icf byte
+// 	icf = 1 << icfBridgesBit
+// 	if h.responseRequired == false {
+// 		icf |= 1 << icfResponseRequiredBit
+// 	}
+// 	if h.messageType == MessageTypeResponse {
+// 		icf |= 1 << icfMessageTypeBit
+// 	}
+// 	bytes := []byte{
+// 		icf, 0x00, h.gatewayCount,
+// 		h.dst.network, h.dst.node, h.dst.unit,
+// 		h.src.network, h.src.node, h.src.unit,
+// 		h.serviceID}
+// 	return bytes
+// }
+
 func encodeHeader(h Header) []byte {
 	var icf byte
-	icf = 1 << icfBridgesBit
-	if h.responseRequired == false {
-		icf |= 1 << icfResponseRequiredBit
+	icf = 1 << icfBridgesBit // Always set bridges bit
+	if !h.responseRequired {
+		icf |= 1 << icfResponseRequiredBit // Correct logic
 	}
 	if h.messageType == MessageTypeResponse {
 		icf |= 1 << icfMessageTypeBit
