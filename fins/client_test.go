@@ -2,6 +2,7 @@ package fins
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"testing"
 
@@ -9,9 +10,14 @@ import (
 )
 
 func TestFinsClient(t *testing.T) {
-	clientAddr := NewAddress("", 9600, 0, 2, 0)
-	plcAddr := NewAddress("", 9601, 0, 10, 0)
-
+	clientAddr, err := NewAddress("127.0.0.1", 9600, 0, 2, 0)
+	if err != nil {
+		fmt.Printf("Error creating Client Address %f", err)
+	}
+	plcAddr, err := NewAddress("127.0.0.1", 9601, 0, 10, 0)
+	if err != nil {
+		fmt.Printf("Error creating PLC Address %f", err)
+	}
 	toWrite := []uint16{5, 4, 3, 2, 1}
 
 	s, e := NewPLCSimulator(plcAddr)
@@ -27,7 +33,7 @@ func TestFinsClient(t *testing.T) {
 	defer c.Close()
 
 	// ------------- Test Words
-	err := c.WriteWords(MemoryAreaDMWord, 100, toWrite)
+	err = c.WriteWords(MemoryAreaDMWord, 100, toWrite)
 	assert.Nil(t, err)
 
 	vals, err := c.ReadWords(MemoryAreaDMWord, 100, 5)
@@ -56,12 +62,12 @@ func TestFinsClient(t *testing.T) {
 	assert.Equal(t, "ф1234", v)
 
 	// ------------- Test Bytes
-	err = c.WriteBytes(MemoryAreaDMWord, 10, []byte{0x00, 0x00 ,0xC1 , 0xA0})
+	err = c.WriteBytes(MemoryAreaDMWord, 10, []byte{0x00, 0x00, 0xC1, 0xA0})
 	assert.Nil(t, err)
 
 	b, err := c.ReadBytes(MemoryAreaDMWord, 10, 2)
 	assert.Nil(t, err)
-	assert.Equal(t, []byte{0x00, 0x00 ,0xC1 , 0xA0}, b)
+	assert.Equal(t, []byte{0x00, 0x00, 0xC1, 0xA0}, b)
 
 	buf := make([]byte, 8, 8)
 	binary.LittleEndian.PutUint64(buf[:], math.Float64bits(-20))
@@ -71,7 +77,6 @@ func TestFinsClient(t *testing.T) {
 	b, err = c.ReadBytes(MemoryAreaDMWord, 10, 4)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x34, 0xc0}, b)
-
 
 	// ------------- Test Bits
 	err = c.WriteBits(MemoryAreaDMBit, 10, 2, []bool{true, false, true})

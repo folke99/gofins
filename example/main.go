@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/l1va/gofins/fins"
+	"github.com/folke99/gofins/fins"
 )
 
 func main() {
@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-    floatRes := math.Float64frombits(binary.LittleEndian.Uint64(b))
+	floatRes := math.Float64frombits(binary.LittleEndian.Uint64(b))
 	fmt.Println("Float result:", floatRes)
 	// output: Float result: 15.6
 
