@@ -9,8 +9,8 @@ import (
 )
 
 func TestFinsClient(t *testing.T) {
-	clientAddr := NewAddress("", 9600, 0, 2, 0)
-	plcAddr := NewAddress("", 9601, 0, 10, 0)
+	clientAddr := NewAddress("0.0.0.0", 9600, 0, 2, 0)
+	plcAddr := NewAddress("0.0.0.0", 9601, 0, 10, 0)
 
 	toWrite := []uint16{5, 4, 3, 2, 1}
 
@@ -56,12 +56,12 @@ func TestFinsClient(t *testing.T) {
 	assert.Equal(t, "ф1234", v)
 
 	// ------------- Test Bytes
-	err = c.WriteBytes(MemoryAreaDMWord, 10, []byte{0x00, 0x00 ,0xC1 , 0xA0})
+	err = c.WriteBytes(MemoryAreaDMWord, 10, []byte{0x00, 0x00, 0xC1, 0xA0})
 	assert.Nil(t, err)
 
 	b, err := c.ReadBytes(MemoryAreaDMWord, 10, 2)
 	assert.Nil(t, err)
-	assert.Equal(t, []byte{0x00, 0x00 ,0xC1 , 0xA0}, b)
+	assert.Equal(t, []byte{0x00, 0x00, 0xC1, 0xA0}, b)
 
 	buf := make([]byte, 8, 8)
 	binary.LittleEndian.PutUint64(buf[:], math.Float64bits(-20))
@@ -71,7 +71,6 @@ func TestFinsClient(t *testing.T) {
 	b, err = c.ReadBytes(MemoryAreaDMWord, 10, 4)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x34, 0xc0}, b)
-
 
 	// ------------- Test Bits
 	err = c.WriteBits(MemoryAreaDMBit, 10, 2, []bool{true, false, true})
