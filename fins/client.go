@@ -5,17 +5,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
 )
 
-const DEFAULT_RESPONSE_TIMEOUT = 20 // ms
+const (
+	DEFAULT_RESPONSE_TIMEOUT = 20   // ms
+	TCP_HEADER_SIZE          = 16   // FINS/TCP header size
+	MAX_PACKET_SIZE          = 4096 // Maximum size of FINS packet
+)
 
-// Client Omron FINS client
+// Client Omron FINS client using TCP
 type Client struct {
-	conn *net.UDPConn
+	conn net.Conn
 	resp []chan response
 	sync.Mutex
 	dst               finsAddress
@@ -24,9 +29,10 @@ type Client struct {
 	closed            bool
 	responseTimeoutMs time.Duration
 	byteOrder         binary.ByteOrder
+	reader            *bufio.Reader
 }
 
-// NewClient creates a new Omron FINS client
+// NewClient creates a new Omron FINS client over TCP
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
 	c.dst = plcAddr.finsAddress
@@ -34,16 +40,30 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c.responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT
 	c.byteOrder = binary.BigEndian
 
-	conn, err := net.DialUDP("udp", localAddr.udpAddress, plcAddr.udpAddress)
-	if err != nil {
-		return nil, err
+	// Set connection timeout
+	dialer := net.Dialer{
+		Timeout: time.Duration(c.responseTimeoutMs) * time.Millisecond,
 	}
-	c.conn = conn
 
-	c.resp = make([]chan response, 256) //storage for all responses, sid is byte - only 256 values
+	// Dial TCP connection with timeout
+	conn, err := dialer.Dial("tcp", plcAddr.tcpAddress.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to establish TCP connection: %w", err)
+	}
+
+	c.conn = conn
+	c.reader = bufio.NewReader(conn)
+	c.resp = make([]chan response, 256)
+
+	// Initialize response channels
+	for i := range c.resp {
+		c.resp[i] = make(chan response, 1) // Buffered channel to prevent blocking
+	}
+
 	go c.listenLoop()
 	return c, nil
 }
+
 // Set byte order
 // Default value: binary.BigEndian
 func (c *Client) SetByteOrder(o binary.ByteOrder) {
@@ -57,10 +77,20 @@ func (c *Client) SetTimeoutMs(t uint) {
 	c.responseTimeoutMs = time.Duration(t)
 }
 
-// Close Closes an Omron FINS connection
+// Close gracefully closes the TCP connection
 func (c *Client) Close() {
-	c.closed = true
-	c.conn.Close()
+	c.Lock()
+	defer c.Unlock()
+
+	if !c.closed {
+		c.closed = true
+		c.conn.Close()
+
+		// Clean up response channels
+		for i := range c.resp {
+			close(c.resp[i])
+		}
+	}
 }
 
 // ReadWords Reads words from the PLC data area
@@ -276,48 +306,117 @@ func (c *Client) incrementSid() byte {
 	return sid
 }
 
+// sendCommand sends a FINS command and waits for a response
 func (c *Client) sendCommand(command []byte) (*response, error) {
+	if c.closed {
+		return nil, fmt.Errorf("connection is closed")
+	}
+
 	header := c.nextHeader()
 	bts := encodeHeader(*header)
 	bts = append(bts, command...)
-	_, err := (*c.conn).Write(bts)
-	if err != nil {
-		return nil, err
+
+	// Add FINS/TCP header
+	length := uint32(len(bts))
+	tcpHeader := make([]byte, 4)
+	binary.BigEndian.PutUint32(tcpHeader, length)
+	fullPacket := append(tcpHeader, bts...)
+
+	// Set write deadline if timeout is specified
+	if c.responseTimeoutMs > 0 {
+		c.conn.SetWriteDeadline(time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond))
 	}
 
-	// if response timeout is zero, block indefinitely
+	// Send the command over TCP
+	_, err := c.conn.Write(fullPacket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Reset write deadline
+	c.conn.SetWriteDeadline(time.Time{})
+
+	// Wait for response
 	if c.responseTimeoutMs > 0 {
 		select {
 		case resp := <-c.resp[header.serviceID]:
 			return &resp, nil
-		case <-time.After(c.responseTimeoutMs * time.Millisecond):
+		case <-time.After(time.Duration(c.responseTimeoutMs) * time.Millisecond):
 			return nil, ResponseTimeoutError{c.responseTimeoutMs}
 		}
-	} else {
-		resp := <-c.resp[header.serviceID]
-		return &resp, nil
+	}
+
+	resp := <-c.resp[header.serviceID]
+	return &resp, nil
+}
+
+// listenLoop listens for incoming TCP responses
+func (c *Client) listenLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in listenLoop: %v", r)
+		}
+	}()
+
+	for {
+		if c.closed {
+			return
+		}
+
+		// Read length header (4 bytes)
+		lengthBuf := make([]byte, 4)
+		_, err := io.ReadFull(c.reader, lengthBuf)
+		if err != nil {
+			if c.closed {
+				return
+			}
+			log.Printf("Error reading message length: %v", err)
+			continue
+		}
+
+		// Get message length
+		messageLength := binary.BigEndian.Uint32(lengthBuf)
+		if messageLength > MAX_PACKET_SIZE {
+			log.Printf("Message length %d exceeds maximum size", messageLength)
+			continue
+		}
+
+		// Read the full message
+		messageBuf := make([]byte, messageLength)
+		_, err = io.ReadFull(c.reader, messageBuf)
+		if err != nil {
+			if c.closed {
+				return
+			}
+			log.Printf("Error reading message body: %v", err)
+			continue
+		}
+
+		// Decode and process the response
+		ans := decodeResponse(messageBuf)
+		select {
+		case c.resp[ans.header.serviceID] <- ans:
+		default:
+			log.Printf("Warning: Response channel for SID %d is full", ans.header.serviceID)
+		}
 	}
 }
 
-func (c *Client) listenLoop() {
-	for {
-		buf := make([]byte, 2048)
-		n, err := bufio.NewReader(c.conn).Read(buf)
-		if err != nil {
-			// do not complain when connection is closed by user
-			if !c.closed {
-				log.Fatal(err)
-			}
-			break
-		}
-
-		if n > 0 {
-			ans := decodeResponse(buf[:n])
-			c.resp[ans.header.serviceID] <- ans
-		} else {
-			log.Println("cannot read response: ", buf)
-		}
+// SetKeepAlive enables TCP keepalive with the specified interval
+func (c *Client) SetKeepAlive(enabled bool, interval time.Duration) error {
+	tcpConn, ok := c.conn.(*net.TCPConn)
+	if !ok {
+		return fmt.Errorf("connection is not TCP")
 	}
+
+	if err := tcpConn.SetKeepAlive(enabled); err != nil {
+		return err
+	}
+
+	if enabled {
+		return tcpConn.SetKeepAlivePeriod(interval)
+	}
+	return nil
 }
 
 func checkIsWordMemoryArea(memoryArea byte) bool {
