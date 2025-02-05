@@ -136,17 +136,25 @@ func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([
 	return r.data, nil
 }
 
-// ReadString Reads a string from the PLC data area
-func (c *Client) ReadString(memoryArea byte, address uint16, readCount uint16) (string, error) {
-	data, e := c.ReadBytes(memoryArea, address, readCount)
-	if e != nil {
-		return "", e
+// ReadString reads a string from the PLC's DM memory area NEW
+func (c *Client) ReadString(memoryArea byte, address uint16, byteCount uint16) (string, error) {
+	if !checkIsWordMemoryArea(memoryArea) {
+		return "", IncompatibleMemoryAreaError{memoryArea}
 	}
-	n := bytes.IndexByte(data, 0)
-	if n == -1 {
-		n = len(data)
+
+	// Ensure the read byte count is word-aligned
+	if byteCount%2 != 0 {
+		byteCount++
 	}
-	return string(data[:n]), nil
+
+	// Read bytes from PLC
+	data, err := c.ReadBytes(memoryArea, address, byteCount)
+	if err != nil {
+		return "", err
+	}
+
+	// Trim null bytes (if string was null-terminated)
+	return string(bytes.TrimRight(data, "\x00")), nil
 }
 
 // ReadBits Reads bits from the PLC data area
@@ -211,17 +219,22 @@ func (c *Client) WriteWords(memoryArea byte, address uint16, data []uint16) erro
 	return checkResponse(c.sendCommand(command))
 }
 
-// WriteString Writes a string to the PLC data area
+// WriteString writes a string to the PLC's DM memory area
 func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
-	if checkIsWordMemoryArea(memoryArea) == false {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
-	bts := make([]byte, 2*len(s), 2*len(s))
-	copy(bts, s)
 
-	command := writeCommand(memAddr(memoryArea, address), uint16((len(s)+1)/2), bts) //TODO: test on real PLC
+	// Convert string to bytes
+	b := []byte(s)
 
-	return checkResponse(c.sendCommand(command))
+	// Ensure word alignment by padding with a null byte if needed
+	if len(b)%2 != 0 {
+		b = append(b, 0x00)
+	}
+
+	// Write to PLC
+	return c.WriteBytes(memoryArea, address, b)
 }
 
 func (c *Client) WriteBytes(memoryArea byte, address uint16, b []byte) error {
@@ -340,7 +353,11 @@ func (c *Client) sendCommand(command []byte) (*response, error) {
 
 	// Set write deadline if timeout is specified
 	if c.responseTimeoutMs > 0 {
-		c.conn.SetWriteDeadline(time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond))
+		deadline := time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond)
+		if err := c.conn.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("failed to set deadline: %w", err)
+		}
+		defer c.conn.SetDeadline(time.Time{}) // Reset deadline after operation
 	}
 
 	// Send the command over TCP
@@ -349,20 +366,24 @@ func (c *Client) sendCommand(command []byte) (*response, error) {
 		return nil, fmt.Errorf("failed to send command: %w", err)
 	}
 
-	// Reset write deadline
-	c.conn.SetWriteDeadline(time.Time{})
-
-	// Wait for response
+	// Wait for response with timeout
 	if c.responseTimeoutMs > 0 {
 		select {
-		case resp := <-c.resp[header.serviceID]:
+		case resp, ok := <-c.resp[header.serviceID]:
+			if !ok {
+				return nil, fmt.Errorf("response channel closed")
+			}
 			return &resp, nil
 		case <-time.After(time.Duration(c.responseTimeoutMs) * time.Millisecond):
 			return nil, ResponseTimeoutError{c.responseTimeoutMs}
 		}
 	}
 
-	resp := <-c.resp[header.serviceID]
+	// No timeout specified, wait indefinitely
+	resp, ok := <-c.resp[header.serviceID]
+	if !ok {
+		return nil, fmt.Errorf("response channel closed")
+	}
 	return &resp, nil
 }
 
@@ -386,14 +407,17 @@ func (c *Client) listenLoop() {
 			if c.closed {
 				return
 			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Handle timeout error
+				log.Printf("Timeout reading message length: %v", err)
+				continue
+			}
 			log.Printf("Error reading message length: %v", err)
 			continue
 		}
 
 		// Get message length
 		messageLength := binary.BigEndian.Uint32(lengthBuf)
-		log.Printf("Incoming message length: %d", messageLength)
-
 		if messageLength > MAX_PACKET_SIZE {
 			log.Printf("Message length %d exceeds maximum size", messageLength)
 			continue
@@ -406,17 +430,19 @@ func (c *Client) listenLoop() {
 			if c.closed {
 				return
 			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Handle timeout error
+				log.Printf("Timeout reading message body: %v", err)
+				continue
+			}
 			log.Printf("Error reading message body: %v", err)
 			continue
 		}
 
-		// Detailed logging
-		log.Printf("Received message bytes: % x", messageBuf)
-
 		// Decode and process the response
 		ans := decodeResponse(messageBuf)
 
-		// Use non-blocking channel send
+		// Use non-blocking channel send with timeout
 		select {
 		case c.resp[ans.header.serviceID] <- ans:
 		default:
