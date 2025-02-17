@@ -3,7 +3,7 @@ module example.com/m/v2
 go 1.23.2
 
 require (
-	github.com/l1va/gofins v0.0.0-20191108164614-37730db91d7d
+	github.com/folke99/gofins v0.0.0-20250124095026-2ad3e31e075d
 	github.com/stretchr/testify v1.10.0
 )
 

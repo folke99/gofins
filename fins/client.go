@@ -5,17 +5,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
 )
 
-const DEFAULT_RESPONSE_TIMEOUT = 20 // ms
+const (
+	DEFAULT_RESPONSE_TIMEOUT = 20   // ms
+	TCP_HEADER_SIZE          = 16   // FINS/TCP header size
+	MAX_PACKET_SIZE          = 4096 // Maximum size of FINS packet
+)
 
-// Client Omron FINS client
+// Client Omron FINS client using TCP
 type Client struct {
-	conn *net.UDPConn
+	conn net.Conn
 	resp []chan response
 	sync.Mutex
 	dst               finsAddress
@@ -24,9 +29,10 @@ type Client struct {
 	closed            bool
 	responseTimeoutMs time.Duration
 	byteOrder         binary.ByteOrder
+	reader            *bufio.Reader
 }
 
-// NewClient creates a new Omron FINS client
+// NewClient creates a new Omron FINS client over TCP
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
 	c.dst = plcAddr.finsAddress
@@ -34,16 +40,30 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c.responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT
 	c.byteOrder = binary.BigEndian
 
-	conn, err := net.DialUDP("udp", localAddr.udpAddress, plcAddr.udpAddress)
-	if err != nil {
-		return nil, err
+	// Set connection timeout
+	dialer := net.Dialer{
+		Timeout: time.Duration(c.responseTimeoutMs) * time.Millisecond,
 	}
-	c.conn = conn
 
-	c.resp = make([]chan response, 256) //storage for all responses, sid is byte - only 256 values
+	// Dial TCP connection with timeout
+	conn, err := dialer.Dial("tcp", plcAddr.tcpAddress.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to establish TCP connection: %w", err)
+	}
+
+	c.conn = conn
+	c.reader = bufio.NewReader(conn)
+	c.resp = make([]chan response, 256)
+
+	// Initialize response channels
+	for i := range c.resp {
+		c.resp[i] = make(chan response, 1) // Buffered channel to prevent blocking
+	}
+
 	go c.listenLoop()
 	return c, nil
 }
+
 // Set byte order
 // Default value: binary.BigEndian
 func (c *Client) SetByteOrder(o binary.ByteOrder) {
@@ -57,10 +77,20 @@ func (c *Client) SetTimeoutMs(t uint) {
 	c.responseTimeoutMs = time.Duration(t)
 }
 
-// Close Closes an Omron FINS connection
+// Close gracefully closes the TCP connection
 func (c *Client) Close() {
-	c.closed = true
-	c.conn.Close()
+	c.Lock()
+	defer c.Unlock()
+
+	if !c.closed {
+		c.closed = true
+		c.conn.Close()
+
+		// Clean up response channels
+		for i := range c.resp {
+			close(c.resp[i])
+		}
+	}
 }
 
 // ReadWords Reads words from the PLC data area
@@ -83,12 +113,20 @@ func (c *Client) ReadWords(memoryArea byte, address uint16, readCount uint16) ([
 	return data, nil
 }
 
-// ReadBytes Reads bytes from the PLC data area
-func (c *Client) ReadBytes(memoryArea byte, address uint16, readCount uint16) ([]byte, error) {
-	if checkIsWordMemoryArea(memoryArea) == false {
+func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([]byte, error) {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return nil, IncompatibleMemoryAreaError{memoryArea}
 	}
-	command := readCommand(memAddr(memoryArea, address), readCount)
+
+	// Ensure read count is word-aligned
+	if byteCount%2 != 0 {
+		return nil, fmt.Errorf("requested byte count must be a multiple of 2 for word-based memory area")
+	}
+
+	// Convert bytes to words (FINS protocol expects word count)
+	wordCount := byteCount / 2
+
+	command := readCommand(memAddr(memoryArea, address), wordCount)
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
 	if e != nil {
@@ -98,17 +136,25 @@ func (c *Client) ReadBytes(memoryArea byte, address uint16, readCount uint16) ([
 	return r.data, nil
 }
 
-// ReadString Reads a string from the PLC data area
-func (c *Client) ReadString(memoryArea byte, address uint16, readCount uint16) (string, error) {
-	data, e := c.ReadBytes(memoryArea, address, readCount)
-	if e != nil {
-		return "", e
+// ReadString reads a string from the PLC's DM memory area NEW
+func (c *Client) ReadString(memoryArea byte, address uint16, byteCount uint16) (string, error) {
+	if !checkIsWordMemoryArea(memoryArea) {
+		return "", IncompatibleMemoryAreaError{memoryArea}
 	}
-	n := bytes.IndexByte(data, 0)
-	if n == -1 {
-		n = len(data)
+
+	// Ensure the read byte count is word-aligned
+	if byteCount%2 != 0 {
+		byteCount++
 	}
-	return string(data[:n]), nil
+
+	// Read bytes from PLC
+	data, err := c.ReadBytes(memoryArea, address, byteCount)
+	if err != nil {
+		return "", err
+	}
+
+	// Trim null bytes (if string was null-terminated)
+	return string(bytes.TrimRight(data, "\x00")), nil
 }
 
 // ReadBits Reads bits from the PLC data area
@@ -173,25 +219,38 @@ func (c *Client) WriteWords(memoryArea byte, address uint16, data []uint16) erro
 	return checkResponse(c.sendCommand(command))
 }
 
-// WriteString Writes a string to the PLC data area
+// WriteString writes a string to the PLC's DM memory area
 func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
-	if checkIsWordMemoryArea(memoryArea) == false {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
-	bts := make([]byte, 2*len(s), 2*len(s))
-	copy(bts, s)
 
-	command := writeCommand(memAddr(memoryArea, address), uint16((len(s)+1)/2), bts) //TODO: test on real PLC
+	// Convert string to bytes
+	b := []byte(s)
 
-	return checkResponse(c.sendCommand(command))
+	// Ensure word alignment by padding with a null byte if needed
+	if len(b)%2 != 0 {
+		b = append(b, 0x00)
+	}
+
+	// Write to PLC
+	return c.WriteBytes(memoryArea, address, b)
 }
 
-// WriteBytes Writes bytes array to the PLC data area
 func (c *Client) WriteBytes(memoryArea byte, address uint16, b []byte) error {
-	if checkIsWordMemoryArea(memoryArea) == false {
+	if !checkIsWordMemoryArea(memoryArea) {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
-	command := writeCommand(memAddr(memoryArea, address), uint16(len(b)), b)
+
+	// Ensure byte slice is an even length (word-aligned)
+	if len(b)%2 != 0 {
+		return fmt.Errorf("data length must be a multiple of 2 for word-based memory area")
+	}
+
+	// Convert bytes to words (FINS protocol expects word count)
+	wordCount := uint16(len(b) / 2)
+
+	command := writeCommand(memAddr(memoryArea, address), wordCount, b)
 	return checkResponse(c.sendCommand(command))
 }
 
@@ -276,48 +335,137 @@ func (c *Client) incrementSid() byte {
 	return sid
 }
 
+// sendCommand sends a FINS command and waits for a response
 func (c *Client) sendCommand(command []byte) (*response, error) {
+	if c.closed {
+		return nil, fmt.Errorf("connection is closed")
+	}
+
 	header := c.nextHeader()
 	bts := encodeHeader(*header)
 	bts = append(bts, command...)
-	_, err := (*c.conn).Write(bts)
-	if err != nil {
-		return nil, err
+
+	// Add FINS/TCP header
+	length := uint32(len(bts))
+	tcpHeader := make([]byte, 4)
+	binary.BigEndian.PutUint32(tcpHeader, length)
+	fullPacket := append(tcpHeader, bts...)
+
+	// Set write deadline if timeout is specified
+	if c.responseTimeoutMs > 0 {
+		deadline := time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond)
+		if err := c.conn.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("failed to set deadline: %w", err)
+		}
+		defer c.conn.SetDeadline(time.Time{}) // Reset deadline after operation
 	}
 
-	// if response timeout is zero, block indefinitely
+	// Send the command over TCP
+	_, err := c.conn.Write(fullPacket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Wait for response with timeout
 	if c.responseTimeoutMs > 0 {
 		select {
-		case resp := <-c.resp[header.serviceID]:
+		case resp, ok := <-c.resp[header.serviceID]:
+			if !ok {
+				return nil, fmt.Errorf("response channel closed")
+			}
 			return &resp, nil
-		case <-time.After(c.responseTimeoutMs * time.Millisecond):
+		case <-time.After(time.Duration(c.responseTimeoutMs) * time.Millisecond):
 			return nil, ResponseTimeoutError{c.responseTimeoutMs}
 		}
-	} else {
-		resp := <-c.resp[header.serviceID]
-		return &resp, nil
+	}
+
+	// No timeout specified, wait indefinitely
+	resp, ok := <-c.resp[header.serviceID]
+	if !ok {
+		return nil, fmt.Errorf("response channel closed")
+	}
+	return &resp, nil
+}
+
+// listenLoop listens for incoming TCP responses
+func (c *Client) listenLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in listenLoop: %v", r)
+		}
+	}()
+
+	for {
+		if c.closed {
+			return
+		}
+
+		// Read 4-byte length header
+		lengthBuf := make([]byte, 4)
+		_, err := io.ReadFull(c.reader, lengthBuf)
+		if err != nil {
+			if c.closed {
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Handle timeout error
+				log.Printf("Timeout reading message length: %v", err)
+				continue
+			}
+			log.Printf("Error reading message length: %v", err)
+			continue
+		}
+
+		// Get message length
+		messageLength := binary.BigEndian.Uint32(lengthBuf)
+		if messageLength > MAX_PACKET_SIZE {
+			log.Printf("Message length %d exceeds maximum size", messageLength)
+			continue
+		}
+
+		// Read the full message
+		messageBuf := make([]byte, messageLength)
+		_, err = io.ReadFull(c.reader, messageBuf)
+		if err != nil {
+			if c.closed {
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Handle timeout error
+				log.Printf("Timeout reading message body: %v", err)
+				continue
+			}
+			log.Printf("Error reading message body: %v", err)
+			continue
+		}
+
+		// Decode and process the response
+		ans := decodeResponse(messageBuf)
+
+		// Use non-blocking channel send with timeout
+		select {
+		case c.resp[ans.header.serviceID] <- ans:
+		default:
+			log.Printf("Warning: Response channel for SID %d is full", ans.header.serviceID)
+		}
 	}
 }
 
-func (c *Client) listenLoop() {
-	for {
-		buf := make([]byte, 2048)
-		n, err := bufio.NewReader(c.conn).Read(buf)
-		if err != nil {
-			// do not complain when connection is closed by user
-			if !c.closed {
-				log.Fatal(err)
-			}
-			break
-		}
-
-		if n > 0 {
-			ans := decodeResponse(buf[:n])
-			c.resp[ans.header.serviceID] <- ans
-		} else {
-			log.Println("cannot read response: ", buf)
-		}
+// SetKeepAlive enables TCP keepalive with the specified interval
+func (c *Client) SetKeepAlive(enabled bool, interval time.Duration) error {
+	tcpConn, ok := c.conn.(*net.TCPConn)
+	if !ok {
+		return fmt.Errorf("connection is not TCP")
 	}
+
+	if err := tcpConn.SetKeepAlive(enabled); err != nil {
+		return err
+	}
+
+	if enabled {
+		return tcpConn.SetKeepAlivePeriod(interval)
+	}
+	return nil
 }
 
 func checkIsWordMemoryArea(memoryArea byte) bool {

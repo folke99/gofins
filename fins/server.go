@@ -1,15 +1,17 @@
 package fins
 
 import (
+	"bufio"
 	"encoding/binary"
+	"io"
 	"log"
 	"net"
 )
 
-// Server Omron FINS server (PLC emulator)
+// Server Omron FINS server (PLC emulator) over TCP
 type Server struct {
 	addr      Address
-	conn      *net.UDPConn
+	listener  net.Listener
 	dmarea    []byte
 	bitdmarea []byte
 	closed    bool
@@ -23,86 +25,185 @@ func NewPLCSimulator(plcAddr Address) (*Server, error) {
 	s.dmarea = make([]byte, DM_AREA_SIZE)
 	s.bitdmarea = make([]byte, DM_AREA_SIZE)
 
-	conn, err := net.ListenUDP("udp", plcAddr.udpAddress)
+	// Start TCP Listener
+	listener, err := net.Listen("tcp", plcAddr.tcpAddress.String())
 	if err != nil {
 		return nil, err
 	}
-	s.conn = conn
+	s.listener = listener
 
-	go func() {
-		var buf [1024]byte
-		for {
-			rlen, remote, err := conn.ReadFromUDP(buf[:])
-			if rlen > 0 {
-				req := decodeRequest(buf[:rlen])
-				resp := s.handler(req)
-
-				_, err = conn.WriteToUDP(encodeResponse(resp), &net.UDPAddr{IP: remote.IP, Port: remote.Port})
-			}
-			if err != nil {
-				// do not complain when connection is closed by user
-				if !s.closed {
-					log.Fatal("Encountered error in server loop: ", err)
-				}
-				break
-			}
-		}
-	}()
+	go s.acceptConnections() // Handle incoming connections
 
 	return s, nil
 }
 
-// Works with only DM area, 2 byte integers
+// Accepts new client connections and starts a handler for each one
+func (s *Server) acceptConnections() {
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if s.closed {
+				return // Server is shutting down
+			}
+			log.Println("Error accepting connection:", err)
+			continue
+		}
+		go s.handleClient(conn) // Handle each client in a separate goroutine
+	}
+}
+
+func (s *Server) handleClient(conn net.Conn) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	for {
+		// Read 4-byte length prefix
+		lengthBytes := make([]byte, 4)
+		_, err := io.ReadFull(reader, lengthBytes)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Length read error: %v", err)
+			}
+			break
+		}
+
+		// Decode message length
+		messageLength := binary.BigEndian.Uint32(lengthBytes)
+		log.Printf("Expecting message of length: %d", messageLength)
+
+		// Sanity check on message length
+		if messageLength > MAX_PACKET_SIZE {
+			log.Printf("Message too large: %d", messageLength)
+			break
+		}
+
+		// Read full message
+		messageBytes := make([]byte, messageLength)
+		_, err = io.ReadFull(reader, messageBytes)
+		if err != nil {
+			log.Printf("Message read error: %v", err)
+			break
+		}
+
+		// Detailed logging of received bytes
+		log.Printf("Received TCP message: % x", messageBytes)
+
+		// Process the message
+		req := decodeRequest(messageBytes)
+		resp := s.handler(req)
+
+		// Prepare response with length prefix
+		respData := encodeResponse(resp)
+		respLength := make([]byte, 4)
+		binary.BigEndian.PutUint32(respLength, uint32(len(respData)))
+
+		fullResp := append(respLength, respData...)
+
+		// Write full response
+		_, err = conn.Write(fullResp)
+		if err != nil {
+			log.Printf("Response write error: %v", err)
+			break
+		}
+	}
+}
+
 func (s *Server) handler(r request) response {
-	var endCode uint16
+	var endCode uint16 = EndCodeNormalCompletion
 	data := []byte{}
+
+	// Extensive logging
+	log.Printf("Handler received: CommandCode=0x%04x, DataLength=%d",
+		r.commandCode, len(r.data))
+
+	// Defensive checks
+	if len(r.data) < 6 {
+		log.Printf("Insufficient data for request: %d bytes", len(r.data))
+		return response{
+			header:      defaultResponseHeader(r.header),
+			commandCode: r.commandCode,
+			endCode:     EndCodeNotSupportedByModelVersion,
+			data:        nil,
+		}
+	}
+
 	switch r.commandCode {
 	case CommandCodeMemoryAreaRead, CommandCodeMemoryAreaWrite:
+		// Ensure enough data for memory address and item count
+		if len(r.data) < 6 {
+			log.Printf("Insufficient data for memory area operation: %d bytes", len(r.data))
+			return response{
+				header:      defaultResponseHeader(r.header),
+				commandCode: r.commandCode,
+				endCode:     EndCodeNotSupportedByModelVersion,
+				data:        nil,
+			}
+		}
+
 		memAddr := decodeMemoryAddress(r.data[:4])
 		ic := binary.BigEndian.Uint16(r.data[4:6]) // Item count
 
+		log.Printf("Memory Operation: Area=0x%02x, Address=%d, ItemCount=%d",
+			memAddr.memoryArea, memAddr.address, ic)
+
 		switch memAddr.memoryArea {
 		case MemoryAreaDMWord:
-
-			if memAddr.address+ic*2 > DM_AREA_SIZE { // Check address boundary
+			if memAddr.address+ic*2 > DM_AREA_SIZE {
+				log.Printf("Address range exceeded for DMWord")
 				endCode = EndCodeAddressRangeExceeded
 				break
 			}
 
-			if r.commandCode == CommandCodeMemoryAreaRead { //Read command
+			if r.commandCode == CommandCodeMemoryAreaRead {
 				data = s.dmarea[memAddr.address : memAddr.address+ic*2]
 			} else { // Write command
+				if len(r.data) < 6+int(ic*2) {
+					log.Printf("Insufficient data for DMWord write")
+					endCode = EndCodeNotSupportedByModelVersion
+					break
+				}
 				copy(s.dmarea[memAddr.address:memAddr.address+ic*2], r.data[6:6+ic*2])
 			}
-			endCode = EndCodeNormalCompletion
 
 		case MemoryAreaDMBit:
-			if memAddr.address+ic > DM_AREA_SIZE { // Check address boundary
+			if memAddr.address+ic > DM_AREA_SIZE {
+				log.Printf("Address range exceeded for DMBit")
 				endCode = EndCodeAddressRangeExceeded
 				break
 			}
+
 			start := memAddr.address + uint16(memAddr.bitOffset)
-			if r.commandCode == CommandCodeMemoryAreaRead { //Read command
+			if r.commandCode == CommandCodeMemoryAreaRead {
 				data = s.bitdmarea[start : start+ic]
 			} else { // Write command
+				if len(r.data) < 6+int(ic) {
+					log.Printf("Insufficient data for DMBit write")
+					endCode = EndCodeNotSupportedByModelVersion
+					break
+				}
 				copy(s.bitdmarea[start:start+ic], r.data[6:6+ic])
 			}
-			endCode = EndCodeNormalCompletion
 
 		default:
-			log.Printf("Memory area is not supported: 0x%04x\n", memAddr.memoryArea)
+			log.Printf("Unsupported memory area: 0x%02x", memAddr.memoryArea)
 			endCode = EndCodeNotSupportedByModelVersion
 		}
 
 	default:
-		log.Printf("Command code is not supported: 0x%04x\n", r.commandCode)
+		log.Printf("Unsupported command code: 0x%04x", r.commandCode)
 		endCode = EndCodeNotSupportedByModelVersion
 	}
-	return response{defaultResponseHeader(r.header), r.commandCode, endCode, data}
+
+	return response{
+		header:      defaultResponseHeader(r.header),
+		commandCode: r.commandCode,
+		endCode:     endCode,
+		data:        data,
+	}
 }
 
-// Close Closes the FINS server
+// Close shuts down the FINS TCP server
 func (s *Server) Close() {
 	s.closed = true
-	s.conn.Close()
+	s.listener.Close()
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/l1va/gofins/fins"
+	"github.com/folke99/gofins/fins"
 )
 
 func main() {
