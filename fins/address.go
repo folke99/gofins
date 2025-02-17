@@ -5,8 +5,8 @@ import (
 	"net"
 )
 
-// finsAddress A FINS device address
-type finsAddress struct {
+// FinsAddress A FINS device address
+type FinsAddress struct {
 	network byte
 	node    byte
 	unit    byte
@@ -14,7 +14,7 @@ type finsAddress struct {
 
 // Address A full device address
 type Address struct {
-	finsAddress finsAddress
+	FinsAddress FinsAddress
 	tcpAddress  *net.TCPAddr // Changed from UDPAddr to TCPAddr
 }
 
@@ -34,7 +34,7 @@ func NewAddress(ip string, port int, network, node, unit byte) (Address, error) 
 
 	return Address{
 		tcpAddress: tcpAddr,
-		finsAddress: finsAddress{
+		FinsAddress: FinsAddress{
 			network: network,
 			node:    node,
 			unit:    unit,
@@ -45,9 +45,9 @@ func NewAddress(ip string, port int, network, node, unit byte) (Address, error) 
 // String returns a string representation of the address
 func (a Address) String() string {
 	return fmt.Sprintf("FINS Address: Network: %d, Node: %d, Unit: %d, TCP: %s",
-		a.finsAddress.network,
-		a.finsAddress.node,
-		a.finsAddress.unit,
+		a.FinsAddress.network,
+		a.FinsAddress.node,
+		a.FinsAddress.unit,
 		a.tcpAddress.String())
 }
 
@@ -56,10 +56,10 @@ func (a Address) Clone() Address {
 	newTCPAddr := *a.tcpAddress // Create a copy of the TCPAddr
 	return Address{
 		tcpAddress: &newTCPAddr,
-		finsAddress: finsAddress{
-			network: a.finsAddress.network,
-			node:    a.finsAddress.node,
-			unit:    a.finsAddress.unit,
+		FinsAddress: FinsAddress{
+			network: a.FinsAddress.network,
+			node:    a.FinsAddress.node,
+			unit:    a.FinsAddress.unit,
 		},
 	}
 }

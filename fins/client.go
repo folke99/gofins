@@ -23,8 +23,8 @@ type Client struct {
 	conn net.Conn
 	resp []chan response
 	sync.Mutex
-	dst               finsAddress
-	src               finsAddress
+	dst               FinsAddress
+	src               FinsAddress
 	sid               byte
 	closed            bool
 	responseTimeoutMs time.Duration
@@ -35,8 +35,8 @@ type Client struct {
 // NewClient creates a new Omron FINS client over TCP
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
-	c.dst = plcAddr.finsAddress
-	c.src = localAddr.finsAddress
+	c.dst = plcAddr.FinsAddress
+	c.src = localAddr.FinsAddress
 	c.responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT
 	c.byteOrder = binary.BigEndian
 

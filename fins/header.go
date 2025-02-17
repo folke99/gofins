@@ -4,8 +4,8 @@ package fins
 type Header struct {
 	messageType      uint8
 	responseRequired bool
-	src              finsAddress
-	dst              finsAddress
+	src              FinsAddress
+	dst              FinsAddress
 	serviceID        byte
 	gatewayCount     uint8
 }
@@ -18,7 +18,7 @@ const (
 	MessageTypeResponse uint8 = iota
 )
 
-func defaultHeader(messageType uint8, responseRequired bool, src finsAddress, dst finsAddress, serviceID byte) Header {
+func defaultHeader(messageType uint8, responseRequired bool, src FinsAddress, dst FinsAddress, serviceID byte) Header {
 	h := Header{}
 	h.messageType = messageType
 	h.responseRequired = responseRequired
@@ -29,7 +29,7 @@ func defaultHeader(messageType uint8, responseRequired bool, src finsAddress, ds
 	return h
 }
 
-func defaultCommandHeader(src finsAddress, dst finsAddress, serviceID byte) Header {
+func defaultCommandHeader(src FinsAddress, dst FinsAddress, serviceID byte) Header {
 	h := defaultHeader(MessageTypeCommand, true, src, dst, serviceID)
 	return h
 }
