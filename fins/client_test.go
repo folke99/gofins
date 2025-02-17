@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+
 func setupTest(t *testing.T) (*Client, *Server, func()) {
 	clientAddr, err := NewAddress("0.0.0.0", 9600, 0, 2, 0)
 	require.NoError(t, err)
