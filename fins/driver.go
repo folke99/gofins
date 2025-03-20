@@ -2,17 +2,19 @@ package fins
 
 import (
 	"encoding/binary"
+	"fmt"
+	"folke99/gofins/mapping"
 	"log"
 )
 
-// request A FINS command request
+// request represents a FINS command request
 type request struct {
 	header      Header
 	commandCode uint16
 	data        []byte
 }
 
-// response A FINS command response
+// response represents a FINS command response
 type response struct {
 	header      Header
 	commandCode uint16
@@ -20,13 +22,14 @@ type response struct {
 	data        []byte
 }
 
-// memoryAddress A plc memory address to do a work
+// memoryAddress represents a PLC memory address
 type memoryAddress struct {
 	memoryArea byte
 	address    uint16
 	bitOffset  byte
 }
 
+// Create memory address helpers
 func memAddr(memoryArea byte, address uint16) memoryAddress {
 	return memAddrWithBitOffset(memoryArea, address, 0)
 }
@@ -35,9 +38,10 @@ func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) memor
 	return memoryAddress{memoryArea, address, bitOffset}
 }
 
+// Command creation functions
 func readCommand(memoryAddr memoryAddress, itemCount uint16) []byte {
 	commandData := make([]byte, 2, 8)
-	binary.BigEndian.PutUint16(commandData[0:2], CommandCodeMemoryAreaRead)
+	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaRead)
 	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
 	commandData = append(commandData, []byte{0, 0}...)
 	binary.BigEndian.PutUint16(commandData[6:8], itemCount)
@@ -46,7 +50,7 @@ func readCommand(memoryAddr memoryAddress, itemCount uint16) []byte {
 
 func writeCommand(memoryAddr memoryAddress, itemCount uint16, bytes []byte) []byte {
 	commandData := make([]byte, 2, 8+len(bytes))
-	binary.BigEndian.PutUint16(commandData[0:2], CommandCodeMemoryAreaWrite)
+	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaWrite)
 	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
 	commandData = append(commandData, []byte{0, 0}...)
 	binary.BigEndian.PutUint16(commandData[6:8], itemCount)
@@ -55,181 +59,129 @@ func writeCommand(memoryAddr memoryAddress, itemCount uint16, bytes []byte) []by
 }
 
 func clockReadCommand() []byte {
-	commandData := make([]byte, 2, 2)
-	binary.BigEndian.PutUint16(commandData[0:2], CommandCodeClockRead)
+	commandData := make([]byte, 2)
+	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeClockRead)
 	return commandData
 }
 
+// Memory address encoding/decoding
 func encodeMemoryAddress(memoryAddr memoryAddress) []byte {
-	bytes := make([]byte, 4, 4)
+	bytes := make([]byte, 4)
 	bytes[0] = memoryAddr.memoryArea
 	binary.BigEndian.PutUint16(bytes[1:3], memoryAddr.address)
 	bytes[3] = memoryAddr.bitOffset
 	return bytes
 }
 
-func decodeMemoryAddress(data []byte) memoryAddress {
-	return memoryAddress{data[0], binary.BigEndian.Uint16(data[1:3]), data[3]}
+func decodeMemoryAddress(data []byte) (memoryAddress, error) {
+	if len(data) < 4 {
+		return memoryAddress{}, fmt.Errorf("insufficient data for memory address: expected 4 bytes, got %d", len(data))
+	}
+	return memoryAddress{
+		memoryArea: data[0],
+		address:    binary.BigEndian.Uint16(data[1:3]),
+		bitOffset:  data[3],
+	}, nil
 }
 
-func decodeRequest(bytes []byte) request {
-	// Check if there are enough bytes to decode
+// Request/Response encoding/decoding
+func decodeRequest(bytes []byte) (request, error) {
 	if len(bytes) < 12 {
-		log.Printf("Insufficient bytes for request decoding: %d", len(bytes))
-		return request{}
+		return request{}, fmt.Errorf("insufficient bytes for request decoding: expected at least 12 bytes, got %d", len(bytes))
+	}
+
+	header, err := decodeHeader(bytes[0:10])
+	if err != nil {
+		return request{}, fmt.Errorf("failed to decode header: %w", err)
 	}
 
 	return request{
-		header:      decodeHeader(bytes[0:10]),
+		header:      header,
 		commandCode: binary.BigEndian.Uint16(bytes[10:12]),
 		data:        bytes[12:],
-	}
+	}, nil
 }
 
-func decodeResponse(bytes []byte) response {
-	return response{
-		decodeHeader(bytes[0:10]),
-		binary.BigEndian.Uint16(bytes[10:12]),
-		binary.BigEndian.Uint16(bytes[12:14]),
-		bytes[14:],
+func decodeResponse(bytes []byte) (response, error) {
+	if len(bytes) < 14 {
+		return response{}, fmt.Errorf("insufficient bytes for response: %d", len(bytes))
 	}
+
+	// Debug logging
+	log.Printf("Decoding response bytes: % X", bytes)
+
+	header := Header{
+		icf: bytes[0],
+		rsv: bytes[1],
+		gct: bytes[2],
+		dna: bytes[3],
+		da1: bytes[4],
+		da2: bytes[5],
+		sna: bytes[6],
+		sa1: bytes[7],
+		sa2: bytes[8],
+		sid: bytes[9],
+	}
+
+	resp := response{
+		header:      header,
+		commandCode: binary.BigEndian.Uint16(bytes[10:12]),
+		endCode:     binary.BigEndian.Uint16(bytes[12:14]),
+		data:        bytes[14:],
+	}
+
+	log.Printf("Decoded header: ICF=%02X, GCT=%02X, DNA=%02X, DA1=%02X, DA2=%02X, SNA=%02X, SA1=%02X, SA2=%02X, SID=%02X",
+		header.icf, header.gct, header.dna, header.da1, header.da2, header.sna, header.sa1, header.sa2, header.sid)
+
+	return resp, nil
 }
+
 func encodeResponse(resp response) []byte {
 	bytes := make([]byte, 4, 4+len(resp.data))
 	binary.BigEndian.PutUint16(bytes[0:2], resp.commandCode)
 	binary.BigEndian.PutUint16(bytes[2:4], resp.endCode)
 	bytes = append(bytes, resp.data...)
-	bh := encodeHeader(resp.header)
-	bh = append(bh, bytes...)
-	return bh
+
+	headerBytes := encodeHeader(resp.header)
+	return append(headerBytes, bytes...)
 }
 
-const (
-	icfBridgesBit          byte = 7
-	icfMessageTypeBit      byte = 6
-	icfResponseRequiredBit byte = 0
-)
-
-// func decodeHeader(bytes []byte) Header {
-// 	header := Header{}
-// 	icf := bytes[0]
-// 	if icf&1<<icfResponseRequiredBit == 0 {
-// 		header.responseRequired = true
-// 	}
-// 	if icf&1<<icfMessageTypeBit == 0 {
-// 		header.messageType = MessageTypeCommand
-// 	} else {
-// 		header.messageType = MessageTypeResponse
-// 	}
-// 	header.gatewayCount = bytes[2]
-// 	header.dst = finsAddress{bytes[3], bytes[4], bytes[5]}
-// 	header.src = finsAddress{bytes[6], bytes[7], bytes[8]}
-// 	header.serviceID = bytes[9]
-
-// 	return header
-// }
-
-func decodeHeader(bytes []byte) Header {
-	header := Header{}
-	icf := bytes[0]
-	header.responseRequired = (icf & (1 << icfResponseRequiredBit)) == 0
-	header.messageType = MessageTypeCommand
-	if icf&(1<<icfMessageTypeBit) != 0 {
-		header.messageType = MessageTypeResponse
-	}
-	header.gatewayCount = bytes[2]
-	header.dst = finsAddress{bytes[3], bytes[4], bytes[5]}
-	header.src = finsAddress{bytes[6], bytes[7], bytes[8]}
-	header.serviceID = bytes[9]
-
-	return header
+// BCD encoding/decoding
+type BCDError struct {
+	msg string
 }
 
-// func encodeHeader(h Header) []byte {
-// 	var icf byte
-// 	icf = 1 << icfBridgesBit
-// 	if h.responseRequired == false {
-// 		icf |= 1 << icfResponseRequiredBit
-// 	}
-// 	if h.messageType == MessageTypeResponse {
-// 		icf |= 1 << icfMessageTypeBit
-// 	}
-// 	bytes := []byte{
-// 		icf, 0x00, h.gatewayCount,
-// 		h.dst.network, h.dst.node, h.dst.unit,
-// 		h.src.network, h.src.node, h.src.unit,
-// 		h.serviceID}
-// 	return bytes
-// }
-
-func encodeHeader(h Header) []byte {
-	var icf byte
-	icf = 1 << icfBridgesBit // Always set bridges bit
-	if !h.responseRequired {
-		icf |= 1 << icfResponseRequiredBit // Correct logic
-	}
-	if h.messageType == MessageTypeResponse {
-		icf |= 1 << icfMessageTypeBit
-	}
-	bytes := []byte{
-		icf, 0x00, h.gatewayCount,
-		h.dst.network, h.dst.node, h.dst.unit,
-		h.src.network, h.src.node, h.src.unit,
-		h.serviceID}
-	return bytes
+func (e BCDError) Error() string {
+	return fmt.Sprintf("BCD error: %s", e.msg)
 }
 
-func encodeBCD(x uint64) []byte {
-	if x == 0 {
-		return []byte{0x0f}
-	}
-	var n int
-	for xx := x; xx > 0; n++ {
-		xx = xx / 10
-	}
-	bcd := make([]byte, (n+1)/2)
-	if n%2 == 1 {
-		hi, lo := byte(x%10), byte(0x0f)
-		bcd[(n-1)/2] = hi<<4 | lo
-		x = x / 10
-		n--
-	}
-	for i := n/2 - 1; i >= 0; i-- {
-		hi, lo := byte((x/10)%10), byte(x%10)
-		bcd[i] = hi<<4 | lo
-		x = x / 100
-	}
-	return bcd
-}
+func decodeBCD(bcd []byte) (uint64, error) {
+	var result uint64
 
-func timesTenPlusCatchingOverflow(x uint64, digit uint64) (uint64, error) {
-	x5 := x<<2 + x
-	if int64(x5) < 0 || x5<<1 > ^digit {
-		return 0, BCDOverflowError{}
-	}
-	return x5<<1 + digit, nil
-}
-
-func decodeBCD(bcd []byte) (x uint64, err error) {
 	for i, b := range bcd {
 		hi, lo := uint64(b>>4), uint64(b&0x0f)
+
+		// Validate high digit
 		if hi > 9 {
-			return 0, BCDBadDigitError{"hi", hi}
+			return 0, BCDError{fmt.Sprintf("invalid BCD digit (hi): %d", hi)}
 		}
-		x, err = timesTenPlusCatchingOverflow(x, hi)
-		if err != nil {
-			return 0, err
-		}
+
+		// Add high digit
+		result = result*10 + hi
+
+		// Handle last nibble specially
 		if lo == 0x0f && i == len(bcd)-1 {
-			return x, nil
+			return result, nil
 		}
+
+		// Validate low digit
 		if lo > 9 {
-			return 0, BCDBadDigitError{"lo", lo}
+			return 0, BCDError{fmt.Sprintf("invalid BCD digit (lo): %d", lo)}
 		}
-		x, err = timesTenPlusCatchingOverflow(x, lo)
-		if err != nil {
-			return 0, err
-		}
+
+		// Add low digit
+		result = result*10 + lo
 	}
-	return x, nil
+
+	return result, nil
 }

@@ -1,4 +1,4 @@
-package fins
+package mapping
 
 const (
 	// CommandCodeMemoryAreaRead Command code: IO memory area read

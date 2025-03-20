@@ -1,0 +1,13 @@
+services:
+  gofins:
+    container_name: gofins
+    image: crypt.alent.dyndns.org/alent/gofins_tcp:dev
+    logging:
+      options:
+        max-size: 10m
+    networks:
+      - folke-network
+
+networks:
+  folke-network:
+    driver: bridge

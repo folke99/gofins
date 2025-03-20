@@ -1,4 +1,4 @@
-module example.com/m/v2
+module folke99/gofins
 
 go 1.23.2
 

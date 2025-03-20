@@ -3,6 +3,8 @@ package fins
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
+	"folke99/gofins/mapping"
 	"io"
 	"log"
 	"net"
@@ -89,7 +91,10 @@ func (s *Server) handleClient(conn net.Conn) {
 		log.Printf("Received TCP message: % x", messageBytes)
 
 		// Process the message
-		req := decodeRequest(messageBytes)
+		req, err := decodeRequest(messageBytes)
+		if err != nil {
+			fmt.Printf("error: %f", err)
+		}
 		resp := s.handler(req)
 
 		// Prepare response with length prefix
@@ -128,7 +133,7 @@ func (s *Server) handler(r request) response {
 	}
 
 	switch r.commandCode {
-	case CommandCodeMemoryAreaRead, CommandCodeMemoryAreaWrite:
+	case mapping.CommandCodeMemoryAreaRead, mapping.CommandCodeMemoryAreaWrite:
 		// Ensure enough data for memory address and item count
 		if len(r.data) < 6 {
 			log.Printf("Insufficient data for memory area operation: %d bytes", len(r.data))
@@ -140,21 +145,24 @@ func (s *Server) handler(r request) response {
 			}
 		}
 
-		memAddr := decodeMemoryAddress(r.data[:4])
+		memAddr, err := decodeMemoryAddress(r.data[:4])
+		if err != nil {
+			fmt.Printf("error: %f", err)
+		}
 		ic := binary.BigEndian.Uint16(r.data[4:6]) // Item count
 
 		log.Printf("Memory Operation: Area=0x%02x, Address=%d, ItemCount=%d",
 			memAddr.memoryArea, memAddr.address, ic)
 
 		switch memAddr.memoryArea {
-		case MemoryAreaDMWord:
+		case mapping.MemoryAreaDMWord:
 			if memAddr.address+ic*2 > DM_AREA_SIZE {
 				log.Printf("Address range exceeded for DMWord")
 				endCode = EndCodeAddressRangeExceeded
 				break
 			}
 
-			if r.commandCode == CommandCodeMemoryAreaRead {
+			if r.commandCode == mapping.CommandCodeMemoryAreaRead {
 				data = s.dmarea[memAddr.address : memAddr.address+ic*2]
 			} else { // Write command
 				if len(r.data) < 6+int(ic*2) {
@@ -165,7 +173,7 @@ func (s *Server) handler(r request) response {
 				copy(s.dmarea[memAddr.address:memAddr.address+ic*2], r.data[6:6+ic*2])
 			}
 
-		case MemoryAreaDMBit:
+		case mapping.MemoryAreaDMBit:
 			if memAddr.address+ic > DM_AREA_SIZE {
 				log.Printf("Address range exceeded for DMBit")
 				endCode = EndCodeAddressRangeExceeded
@@ -173,7 +181,7 @@ func (s *Server) handler(r request) response {
 			}
 
 			start := memAddr.address + uint16(memAddr.bitOffset)
-			if r.commandCode == CommandCodeMemoryAreaRead {
+			if r.commandCode == mapping.CommandCodeMemoryAreaRead {
 				data = s.bitdmarea[start : start+ic]
 			} else { // Write command
 				if len(r.data) < 6+int(ic) {

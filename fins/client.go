@@ -5,17 +5,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
-)
-
-const (
-	DEFAULT_RESPONSE_TIMEOUT = 20   // ms
-	TCP_HEADER_SIZE          = 16   // FINS/TCP header size
-	MAX_PACKET_SIZE          = 4096 // Maximum size of FINS packet
 )
 
 // Client Omron FINS client using TCP
@@ -32,49 +25,63 @@ type Client struct {
 	reader            *bufio.Reader
 }
 
-// NewClient creates a new Omron FINS client over TCP
+const (
+	DEFAULT_RESPONSE_TIMEOUT = 2000
+	DEFAULT_CONNECT_TIMEOUT  = 5000
+	TCP_HEADER_SIZE          = 16
+	MAX_PACKET_SIZE          = 2048
+)
+
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
 	c.dst = plcAddr.finsAddress
 	c.src = localAddr.finsAddress
 	c.responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT
 	c.byteOrder = binary.BigEndian
+	c.sid = 0
 
-	// Set connection timeout
 	dialer := net.Dialer{
-		Timeout: time.Duration(c.responseTimeoutMs) * time.Millisecond,
+		Timeout: time.Duration(DEFAULT_CONNECT_TIMEOUT) * time.Millisecond,
 	}
 
-	// Dial TCP connection with timeout
 	conn, err := dialer.Dial("tcp", plcAddr.tcpAddress.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish TCP connection: %w", err)
+	}
+
+	// Set read timeout on the connection
+	err = conn.SetReadDeadline(time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond))
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
 
 	c.conn = conn
 	c.reader = bufio.NewReader(conn)
 	c.resp = make([]chan response, 256)
 
-	// Initialize response channels
 	for i := range c.resp {
-		c.resp[i] = make(chan response, 1) // Buffered channel to prevent blocking
+		c.resp[i] = make(chan response, 1)
+	}
+
+	err = c.sendConnectionRequest()
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.testInitialConnection()
+	if err != nil {
+		return nil, err
 	}
 
 	go c.listenLoop()
+
+	err = c.TestEndpoints()
+	if err != nil {
+		log.Printf("Error testing endpoints: %f", err)
+	}
+
 	return c, nil
-}
-
-// Set byte order
-// Default value: binary.BigEndian
-func (c *Client) SetByteOrder(o binary.ByteOrder) {
-	c.byteOrder = o
-}
-
-// Set response timeout duration (ms).
-// Default value: 20ms.
-// A timeout of zero can be used to block indefinitely.
-func (c *Client) SetTimeoutMs(t uint) {
-	c.responseTimeoutMs = time.Duration(t)
 }
 
 // Close gracefully closes the TCP connection
@@ -101,6 +108,10 @@ func (c *Client) ReadWords(memoryArea byte, address uint16, readCount uint16) ([
 	command := readCommand(memAddr(memoryArea, address), readCount)
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
+
+	//tracing
+	log.Printf("Response from ReadWords(), %+v", r)
+
 	if e != nil {
 		return nil, e
 	}
@@ -129,6 +140,10 @@ func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([
 	command := readCommand(memAddr(memoryArea, address), wordCount)
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
+
+	//tracing
+	log.Printf("Response from ReadBytes(), %+v", r)
+
 	if e != nil {
 		return nil, e
 	}
@@ -165,6 +180,10 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 	command := readCommand(memAddrWithBitOffset(memoryArea, address, bitOffset), readCount)
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
+
+	//tracing
+	log.Printf("Response from ReadBits(), %+v", r)
+
 	if e != nil {
 		return nil, e
 	}
@@ -175,6 +194,30 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 	}
 
 	return data, nil
+}
+
+func (c *Client) ReadPLCStatus() error {
+	log.Println("📡 Attempting to read PLC status...")
+
+	// Command bytes for PLC Status Read (06 01)
+	commandBytes := []byte{0x06, 0x01}
+
+	// Send FINS command
+	resp, err := c.sendCommand(commandBytes)
+	if err != nil {
+		return fmt.Errorf("failed to send PLC status command: %v", err)
+	}
+
+	log.Println("✅ Command sent successfully")
+	log.Printf("📩 Response received: %+v", resp)
+
+	// Decode the response to check the command code and structure
+	err = checkResponse(resp, err)
+	if err != nil {
+		return fmt.Errorf("failed to parse FINS response: %v", err)
+	}
+
+	return nil
 }
 
 // ReadClock Reads the PLC clock
@@ -275,41 +318,6 @@ func (c *Client) WriteBits(memoryArea byte, address uint16, bitOffset byte, data
 	return checkResponse(c.sendCommand(command))
 }
 
-// SetBit Sets a bit in the PLC data area
-func (c *Client) SetBit(memoryArea byte, address uint16, bitOffset byte) error {
-	return c.bitTwiddle(memoryArea, address, bitOffset, 0x01)
-}
-
-// ResetBit Resets a bit in the PLC data area
-func (c *Client) ResetBit(memoryArea byte, address uint16, bitOffset byte) error {
-	return c.bitTwiddle(memoryArea, address, bitOffset, 0x00)
-}
-
-// ToggleBit Toggles a bit in the PLC data area
-func (c *Client) ToggleBit(memoryArea byte, address uint16, bitOffset byte) error {
-	b, e := c.ReadBits(memoryArea, address, bitOffset, 1)
-	if e != nil {
-		return e
-	}
-	var t byte
-	if b[0] {
-		t = 0x00
-	} else {
-		t = 0x01
-	}
-	return c.bitTwiddle(memoryArea, address, bitOffset, t)
-}
-
-func (c *Client) bitTwiddle(memoryArea byte, address uint16, bitOffset byte, value byte) error {
-	if checkIsBitMemoryArea(memoryArea) == false {
-		return IncompatibleMemoryAreaError{memoryArea}
-	}
-	mem := memoryAddress{memoryArea, address, bitOffset}
-	command := writeCommand(mem, 1, []byte{value})
-
-	return checkResponse(c.sendCommand(command))
-}
-
 func checkResponse(r *response, e error) error {
 	if e != nil {
 		return e
@@ -320,170 +328,113 @@ func checkResponse(r *response, e error) error {
 	return nil
 }
 
-func (c *Client) nextHeader() *Header {
-	sid := c.incrementSid()
-	header := defaultCommandHeader(c.src, c.dst, sid)
-	return &header
-}
-
-func (c *Client) incrementSid() byte {
-	c.Lock() //thread-safe sid incrementation
-	c.sid++
-	sid := c.sid
-	c.Unlock()
-	c.resp[sid] = make(chan response) //clearing cell of storage for new response
-	return sid
-}
-
-// sendCommand sends a FINS command and waits for a response
 func (c *Client) sendCommand(command []byte) (*response, error) {
 	if c.closed {
 		return nil, fmt.Errorf("connection is closed")
 	}
 
+	commandLength := len(command)
+	c.sendInitFrame((18 + commandLength), 2, false)
+
 	header := c.nextHeader()
-	bts := encodeHeader(*header)
-	bts = append(bts, command...)
+	fullPacket := encodeHeader(*header)
+	fullPacket = append(fullPacket, command...)
 
-	// Add FINS/TCP header
-	length := uint32(len(bts))
-	tcpHeader := make([]byte, 4)
-	binary.BigEndian.PutUint32(tcpHeader, length)
-	fullPacket := append(tcpHeader, bts...)
+	log.Printf("📨 Sending FINS command - Service ID: %d", header.sid)
+	log.Printf("FullPacket: % X", fullPacket)
 
-	// Set write deadline if timeout is specified
-	if c.responseTimeoutMs > 0 {
-		deadline := time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond)
-		if err := c.conn.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("failed to set deadline: %w", err)
-		}
-		defer c.conn.SetDeadline(time.Time{}) // Reset deadline after operation
+	// Create response channel if it doesn't exist
+	if c.resp[header.sid] == nil {
+		c.resp[header.sid] = make(chan response, 1)
+		log.Printf("Response channel created for sid, %+v", header.sid)
 	}
 
-	// Send the command over TCP
-	_, err := c.conn.Write(fullPacket)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send command: %w", err)
+	// Send command with retries
+	// TODO: Do we need to retry if the first fail?
+	var lastError error
+	for i := 0; i < 3; i++ {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+			return nil, fmt.Errorf("failed to set write deadline: %w", err)
+		}
+
+		_, err := c.conn.Write(fullPacket)
+		if err == nil {
+			log.Printf("Command sent successfully")
+			break
+		}
+		lastError = err
+		log.Printf("Write attempt %d failed: %v", i+1, err)
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Wait for response with timeout
-	if c.responseTimeoutMs > 0 {
-		select {
-		case resp, ok := <-c.resp[header.serviceID]:
-			if !ok {
-				return nil, fmt.Errorf("response channel closed")
-			}
-			return &resp, nil
-		case <-time.After(time.Duration(c.responseTimeoutMs) * time.Millisecond):
-			return nil, ResponseTimeoutError{c.responseTimeoutMs}
-		}
+	if lastError != nil {
+		return nil, fmt.Errorf("failed to send command after retries: %w", lastError)
 	}
 
-	// No timeout specified, wait indefinitely
-	resp, ok := <-c.resp[header.serviceID]
-	if !ok {
-		return nil, fmt.Errorf("response channel closed")
+	// Wait for response
+	timeout := time.Duration(c.responseTimeoutMs) * time.Millisecond
+	if timeout == 0 {
+		timeout = 10 * time.Second
 	}
-	return &resp, nil
-}
 
-// listenLoop listens for incoming TCP responses
-func (c *Client) listenLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in listenLoop: %v", r)
+	select {
+	case resp, ok := <-c.resp[header.sid]:
+		if !ok {
+			return nil, fmt.Errorf("response channel closed")
 		}
-	}()
-
-	for {
-		if c.closed {
-			return
-		}
-
-		// Read 4-byte length header
-		lengthBuf := make([]byte, 4)
-		_, err := io.ReadFull(c.reader, lengthBuf)
-		if err != nil {
-			if c.closed {
-				return
-			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Handle timeout error
-				log.Printf("Timeout reading message length: %v", err)
-				continue
-			}
-			log.Printf("Error reading message length: %v", err)
-			continue
-		}
-
-		// Get message length
-		messageLength := binary.BigEndian.Uint32(lengthBuf)
-		if messageLength > MAX_PACKET_SIZE {
-			log.Printf("Message length %d exceeds maximum size", messageLength)
-			continue
-		}
-
-		// Read the full message
-		messageBuf := make([]byte, messageLength)
-		_, err = io.ReadFull(c.reader, messageBuf)
-		if err != nil {
-			if c.closed {
-				return
-			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Handle timeout error
-				log.Printf("Timeout reading message body: %v", err)
-				continue
-			}
-			log.Printf("Error reading message body: %v", err)
-			continue
-		}
-
-		// Decode and process the response
-		ans := decodeResponse(messageBuf)
-
-		// Use non-blocking channel send with timeout
-		select {
-		case c.resp[ans.header.serviceID] <- ans:
-		default:
-			log.Printf("Warning: Response channel for SID %d is full", ans.header.serviceID)
-		}
+		log.Printf("Response received - Command Code: %04X, End Code: %04X", resp.commandCode, resp.endCode)
+		return &resp, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("response timeout after %v", timeout)
 	}
 }
 
-// SetKeepAlive enables TCP keepalive with the specified interval
-func (c *Client) SetKeepAlive(enabled bool, interval time.Duration) error {
-	tcpConn, ok := c.conn.(*net.TCPConn)
-	if !ok {
-		return fmt.Errorf("connection is not TCP")
+func (c *Client) sendInitFrame(length, commandCode int, initCon bool) error {
+	initFrame := []byte{
+		0x46, 0x49, 0x4E, 0x53, // "FINS"
+		0x00, 0x00, 0x00, byte(length), // Length
+		0x00, 0x00, 0x00, byte(commandCode), // Command
+		0x00, 0x00, 0x00, 0x00, // Error code
 	}
 
-	if err := tcpConn.SetKeepAlive(enabled); err != nil {
+	if initCon {
+		initFrame = append(initFrame, 0x00, 0x00, 0x00, 0x00) // Client node address (0 = auto-assign)
+	}
+
+	if _, err := c.conn.Write(initFrame); err != nil {
+		log.Printf("❌ Failed to send init frame: %v", err)
 		return err
-	}
-
-	if enabled {
-		return tcpConn.SetKeepAlivePeriod(interval)
 	}
 	return nil
 }
 
-func checkIsWordMemoryArea(memoryArea byte) bool {
-	if memoryArea == MemoryAreaDMWord ||
-		memoryArea == MemoryAreaARWord ||
-		memoryArea == MemoryAreaHRWord ||
-		memoryArea == MemoryAreaWRWord {
-		return true
+func (c *Client) sendConnectionRequest() error {
+	err := c.sendInitFrame(12, 0, true)
+	if err != nil {
+		return err
 	}
-	return false
-}
 
-func checkIsBitMemoryArea(memoryArea byte) bool {
-	if memoryArea == MemoryAreaDMBit ||
-		memoryArea == MemoryAreaARBit ||
-		memoryArea == MemoryAreaHRBit ||
-		memoryArea == MemoryAreaWRBit {
-		return true
+	// Read response
+	response := make([]byte, 24)
+	n, err := c.reader.Read(response)
+	if err != nil || n < 16 {
+		return fmt.Errorf("failed to receive connection response: %v", err)
 	}
-	return false
+
+	// Verify response header
+	if !bytes.Equal(response[0:4], []byte{0x46, 0x49, 0x4E, 0x53}) { // "FINS"
+		return fmt.Errorf("invalid FINS response header")
+	}
+
+	clientNode := response[19] // Client node assigned by PLC
+	serverNode := response[23] // Server node
+
+	log.Printf("✅ Connection established. Client Node: %d, Server Node: %d Response: %02X", clientNode, serverNode, response)
+
+	// Store these values for later messages
+
+	c.src.node = clientNode
+	c.dst.node = serverNode
+
+	return nil
 }

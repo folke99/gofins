@@ -1,4 +1,4 @@
-package fins
+package mapping
 
 const (
 	// MemoryAreaCIOBit Memory area: CIO area; bit

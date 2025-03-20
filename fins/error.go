@@ -2,6 +2,9 @@ package fins
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"net"
 	"time"
 )
 
@@ -26,7 +29,7 @@ func (e IncompatibleMemoryAreaError) Error() string {
 // Driver errors
 
 type BCDBadDigitError struct {
-	v string
+	v   string
 	val uint64
 }
 
@@ -34,8 +37,37 @@ func (e BCDBadDigitError) Error() string {
 	return fmt.Sprintf("Bad digit in BCD decoding: %s = %d", e.v, e.val)
 }
 
-type BCDOverflowError struct {}
+type BCDOverflowError struct{}
 
 func (e BCDOverflowError) Error() string {
 	return "Overflow occurred in BCD decoding"
+}
+
+// Helper function to handle read errors
+func handleReadError(err error, consecutiveErrors *int, maxErrors int, c *Client) bool {
+	*consecutiveErrors++
+	if *consecutiveErrors >= maxErrors {
+		log.Printf("Too many consecutive errors (%d), exiting listen loop", *consecutiveErrors)
+		c.closed = true
+		return true
+	}
+
+	if c.closed {
+		return true
+	}
+
+	if err == io.EOF {
+		log.Printf("Connection closed by peer (EOF)")
+		c.closed = true
+		return true
+	}
+
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		log.Printf("Read timeout: %v", netErr)
+	} else {
+		log.Printf("Read error: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	return false
 }
