@@ -53,7 +53,7 @@ func (c *Client) listenLoop() {
 		messageBuf := frameCopy[16:] // Skip the 16-byte header
 
 		// Decode the response
-		ans, err := decodeResponse(messageBuf)
+		ans, err := DecodeResponse(messageBuf)
 		if err != nil {
 			log.Printf("Failed to decode response: %v", err)
 			log.Printf("Message that failed decoding: % X", messageBuf)
@@ -116,13 +116,13 @@ func (c *Client) finsSplitFunc(data []byte, atEOF bool) (advance int, token []by
 }
 
 // Handle decoded response
-func (c *Client) channelHandler(ans response) {
+func (c *Client) channelHandler(ans Response) {
 	sid := ans.header.sid
 
 	// Ensure response channel exists
 	c.Lock()
 	if c.resp[sid] == nil {
-		c.resp[sid] = make(chan response, 1)
+		c.resp[sid] = make(chan Response, 1)
 	}
 	c.Unlock()
 

@@ -50,7 +50,7 @@ func (c *Client) bitTwiddle(memoryArea byte, address uint16, bitOffset byte, val
 	if checkIsBitMemoryArea(memoryArea) == false {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
-	mem := memoryAddress{memoryArea, address, bitOffset}
+	mem := MemoryAddress{memoryArea, address, bitOffset}
 	command := writeCommand(mem, 1, []byte{value})
 
 	return checkResponse(c.sendCommand(command))
@@ -66,7 +66,7 @@ func (c *Client) incrementSid() byte {
 	c.Unlock()
 
 	// Clearing cell of storage for new response
-	c.resp[sid] = make(chan response)
+	c.resp[sid] = make(chan Response)
 	return sid
 }
 

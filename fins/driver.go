@@ -7,15 +7,16 @@ import (
 	"log"
 )
 
+// NOTE: Only used in server.go
 // request represents a FINS command request
-type request struct {
+type Request struct {
 	header      Header
 	commandCode uint16
 	data        []byte
 }
 
 // response represents a FINS command response
-type response struct {
+type Response struct {
 	header      Header
 	commandCode uint16
 	endCode     uint16
@@ -23,23 +24,55 @@ type response struct {
 }
 
 // memoryAddress represents a PLC memory address
-type memoryAddress struct {
+type MemoryAddress struct {
 	memoryArea byte
 	address    uint16
 	bitOffset  byte
 }
 
+// NewResponse creates a new FINS response
+func NewResponse(req Request, endCode uint16, data []byte) Response {
+	return Response{
+		header:      req.header, // Copy the request header
+		commandCode: req.commandCode,
+		endCode:     endCode,
+		data:        data,
+	}
+}
+
+// Getters
+func (r Request) GetHeader() Header {
+	return r.header
+}
+
+func (r Request) GetCommandCode() uint16 {
+	return r.commandCode
+}
+
+func (r Request) GetData() []byte {
+	return r.data
+}
+func (m MemoryAddress) GetMemoryArea() byte {
+	return m.memoryArea
+}
+func (m MemoryAddress) GetAddress() uint16 {
+	return m.address
+}
+func (m MemoryAddress) GetBitOffset() byte {
+	return m.bitOffset
+}
+
 // Create memory address helpers
-func memAddr(memoryArea byte, address uint16) memoryAddress {
+func memAddr(memoryArea byte, address uint16) MemoryAddress {
 	return memAddrWithBitOffset(memoryArea, address, 0)
 }
 
-func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) memoryAddress {
-	return memoryAddress{memoryArea, address, bitOffset}
+func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) MemoryAddress {
+	return MemoryAddress{memoryArea, address, bitOffset}
 }
 
 // Command creation functions
-func readCommand(memoryAddr memoryAddress, itemCount uint16) []byte {
+func readCommand(memoryAddr MemoryAddress, itemCount uint16) []byte {
 	commandData := make([]byte, 2, 8)
 	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaRead)
 	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
@@ -48,7 +81,7 @@ func readCommand(memoryAddr memoryAddress, itemCount uint16) []byte {
 	return commandData
 }
 
-func writeCommand(memoryAddr memoryAddress, itemCount uint16, bytes []byte) []byte {
+func writeCommand(memoryAddr MemoryAddress, itemCount uint16, bytes []byte) []byte {
 	commandData := make([]byte, 2, 8+len(bytes))
 	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaWrite)
 	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
@@ -65,7 +98,7 @@ func clockReadCommand() []byte {
 }
 
 // Memory address encoding/decoding
-func encodeMemoryAddress(memoryAddr memoryAddress) []byte {
+func encodeMemoryAddress(memoryAddr MemoryAddress) []byte {
 	bytes := make([]byte, 4)
 	bytes[0] = memoryAddr.memoryArea
 	binary.BigEndian.PutUint16(bytes[1:3], memoryAddr.address)
@@ -73,38 +106,40 @@ func encodeMemoryAddress(memoryAddr memoryAddress) []byte {
 	return bytes
 }
 
-func decodeMemoryAddress(data []byte) (memoryAddress, error) {
+// NOTE: Only used in server.go
+func DecodeMemoryAddress(data []byte) (MemoryAddress, error) {
 	if len(data) < 4 {
-		return memoryAddress{}, fmt.Errorf("insufficient data for memory address: expected 4 bytes, got %d", len(data))
+		return MemoryAddress{}, fmt.Errorf("insufficient data for memory address: expected 4 bytes, got %d", len(data))
 	}
-	return memoryAddress{
+	return MemoryAddress{
 		memoryArea: data[0],
 		address:    binary.BigEndian.Uint16(data[1:3]),
 		bitOffset:  data[3],
 	}, nil
 }
 
+// NOTE: Only used in server.go
 // Request/Response encoding/decoding
-func decodeRequest(bytes []byte) (request, error) {
+func DecodeRequest(bytes []byte) (Request, error) {
 	if len(bytes) < 12 {
-		return request{}, fmt.Errorf("insufficient bytes for request decoding: expected at least 12 bytes, got %d", len(bytes))
+		return Request{}, fmt.Errorf("insufficient bytes for request decoding: expected at least 12 bytes, got %d", len(bytes))
 	}
 
 	header, err := decodeHeader(bytes[0:10])
 	if err != nil {
-		return request{}, fmt.Errorf("failed to decode header: %w", err)
+		return Request{}, fmt.Errorf("failed to decode header: %w", err)
 	}
 
-	return request{
+	return Request{
 		header:      header,
 		commandCode: binary.BigEndian.Uint16(bytes[10:12]),
 		data:        bytes[12:],
 	}, nil
 }
 
-func decodeResponse(bytes []byte) (response, error) {
+func DecodeResponse(bytes []byte) (Response, error) {
 	if len(bytes) < 14 {
-		return response{}, fmt.Errorf("insufficient bytes for response: %d", len(bytes))
+		return Response{}, fmt.Errorf("insufficient bytes for response: %d", len(bytes))
 	}
 
 	// Debug logging
@@ -123,7 +158,7 @@ func decodeResponse(bytes []byte) (response, error) {
 		sid: bytes[9],
 	}
 
-	resp := response{
+	resp := Response{
 		header:      header,
 		commandCode: binary.BigEndian.Uint16(bytes[10:12]),
 		endCode:     binary.BigEndian.Uint16(bytes[12:14]),
@@ -136,7 +171,8 @@ func decodeResponse(bytes []byte) (response, error) {
 	return resp, nil
 }
 
-func encodeResponse(resp response) []byte {
+// NOTE: Only used in server.go
+func EncodeResponse(resp Response) []byte {
 	bytes := make([]byte, 4, 4+len(resp.data))
 	binary.BigEndian.PutUint16(bytes[0:2], resp.commandCode)
 	binary.BigEndian.PutUint16(bytes[2:4], resp.endCode)
@@ -155,6 +191,7 @@ func (e BCDError) Error() string {
 	return fmt.Sprintf("BCD error: %s", e.msg)
 }
 
+// Date Decoding
 func decodeBCD(bcd []byte) (uint64, error) {
 	var result uint64
 

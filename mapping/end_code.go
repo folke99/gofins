@@ -1,4 +1,4 @@
-package fins
+package mapping
 
 // Data taken from Omron document Cat. No. W342-E1-15, pages 155-161
 const (

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"folke99/gofins/mapping"
+	"folke99/gofins/simulator"
 
 	"folke99/gofins/fins"
 
@@ -13,14 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupTest(t *testing.T) (*fins.Client, *fins.Server, func()) {
+func setupTest(t *testing.T) (*fins.Client, *simulator.Server, func()) {
 	clientAddr, err := fins.NewAddress("0.0.0.0", 9600, 0, 2, 0)
 	require.NoError(t, err)
 
 	plcAddr, err := fins.NewAddress("0.0.0.0", 9601, 0, 10, 0)
 	require.NoError(t, err)
 
-	s, err := fins.NewPLCSimulator(plcAddr)
+	s, err := simulator.NewPLCSimulator(plcAddr.String())
 	require.NoError(t, err)
 
 	c, err := fins.NewClient(clientAddr, plcAddr)

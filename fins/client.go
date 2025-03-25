@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"folke99/gofins/mapping"
 	"log"
 	"net"
 	"sync"
@@ -14,7 +15,7 @@ import (
 // Client Omron FINS client using TCP
 type Client struct {
 	conn net.Conn
-	resp []chan response
+	resp []chan Response
 	sync.Mutex
 	dst               finsAddress
 	src               finsAddress
@@ -58,10 +59,10 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 
 	c.conn = conn
 	c.reader = bufio.NewReader(conn)
-	c.resp = make([]chan response, 256)
+	c.resp = make([]chan Response, 256)
 
 	for i := range c.resp {
-		c.resp[i] = make(chan response, 1)
+		c.resp[i] = make(chan Response, 1)
 	}
 
 	err = c.sendConnectionRequest()
@@ -318,17 +319,17 @@ func (c *Client) WriteBits(memoryArea byte, address uint16, bitOffset byte, data
 	return checkResponse(c.sendCommand(command))
 }
 
-func checkResponse(r *response, e error) error {
+func checkResponse(r *Response, e error) error {
 	if e != nil {
 		return e
 	}
-	if r.endCode != EndCodeNormalCompletion {
+	if r.endCode != mapping.EndCodeNormalCompletion {
 		return fmt.Errorf("error reported by destination, end code 0x%x", r.endCode)
 	}
 	return nil
 }
 
-func (c *Client) sendCommand(command []byte) (*response, error) {
+func (c *Client) sendCommand(command []byte) (*Response, error) {
 	if c.closed {
 		return nil, fmt.Errorf("connection is closed")
 	}
@@ -345,7 +346,7 @@ func (c *Client) sendCommand(command []byte) (*response, error) {
 
 	// Create response channel if it doesn't exist
 	if c.resp[header.sid] == nil {
-		c.resp[header.sid] = make(chan response, 1)
+		c.resp[header.sid] = make(chan Response, 1)
 		log.Printf("Response channel created for sid, %+v", header.sid)
 	}
 
