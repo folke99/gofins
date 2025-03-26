@@ -3,7 +3,6 @@ package fins
 import (
 	"encoding/binary"
 	"fmt"
-	"folke99/gofins/mapping"
 	"log"
 )
 
@@ -21,13 +20,6 @@ type Response struct {
 	commandCode uint16
 	endCode     uint16
 	data        []byte
-}
-
-// memoryAddress represents a PLC memory address
-type MemoryAddress struct {
-	memoryArea byte
-	address    uint16
-	bitOffset  byte
 }
 
 // NewResponse creates a new FINS response
@@ -51,71 +43,6 @@ func (r Request) GetCommandCode() uint16 {
 
 func (r Request) GetData() []byte {
 	return r.data
-}
-func (m MemoryAddress) GetMemoryArea() byte {
-	return m.memoryArea
-}
-func (m MemoryAddress) GetAddress() uint16 {
-	return m.address
-}
-func (m MemoryAddress) GetBitOffset() byte {
-	return m.bitOffset
-}
-
-// Create memory address helpers
-func memAddr(memoryArea byte, address uint16) MemoryAddress {
-	return memAddrWithBitOffset(memoryArea, address, 0)
-}
-
-func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) MemoryAddress {
-	return MemoryAddress{memoryArea, address, bitOffset}
-}
-
-// Command creation functions
-func readCommand(memoryAddr MemoryAddress, itemCount uint16) []byte {
-	commandData := make([]byte, 2, 8)
-	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaRead)
-	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
-	commandData = append(commandData, []byte{0, 0}...)
-	binary.BigEndian.PutUint16(commandData[6:8], itemCount)
-	return commandData
-}
-
-func writeCommand(memoryAddr MemoryAddress, itemCount uint16, bytes []byte) []byte {
-	commandData := make([]byte, 2, 8+len(bytes))
-	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaWrite)
-	commandData = append(commandData, encodeMemoryAddress(memoryAddr)...)
-	commandData = append(commandData, []byte{0, 0}...)
-	binary.BigEndian.PutUint16(commandData[6:8], itemCount)
-	commandData = append(commandData, bytes...)
-	return commandData
-}
-
-func clockReadCommand() []byte {
-	commandData := make([]byte, 2)
-	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeClockRead)
-	return commandData
-}
-
-// Memory address encoding/decoding
-func encodeMemoryAddress(memoryAddr MemoryAddress) []byte {
-	bytes := make([]byte, 4)
-	bytes[0] = memoryAddr.memoryArea
-	binary.BigEndian.PutUint16(bytes[1:3], memoryAddr.address)
-	bytes[3] = memoryAddr.bitOffset
-	return bytes
-}
-
-// NOTE: Only used in server.go
-func DecodeMemoryAddress(data []byte) (MemoryAddress, error) {
-	if len(data) < 4 {
-		return MemoryAddress{}, fmt.Errorf("insufficient data for memory address: expected 4 bytes, got %d", len(data))
-	}
-	return MemoryAddress{
-		memoryArea: data[0],
-		address:    binary.BigEndian.Uint16(data[1:3]),
-		bitOffset:  data[3],
-	}, nil
 }
 
 // NOTE: Only used in server.go
@@ -180,15 +107,6 @@ func EncodeResponse(resp Response) []byte {
 
 	headerBytes := encodeHeader(resp.header)
 	return append(headerBytes, bytes...)
-}
-
-// BCD encoding/decoding
-type BCDError struct {
-	msg string
-}
-
-func (e BCDError) Error() string {
-	return fmt.Sprintf("BCD error: %s", e.msg)
 }
 
 // Date Decoding

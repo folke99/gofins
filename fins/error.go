@@ -43,6 +43,15 @@ func (e BCDOverflowError) Error() string {
 	return "Overflow occurred in BCD decoding"
 }
 
+// BCD encoding/decoding
+type BCDError struct {
+	msg string
+}
+
+func (e BCDError) Error() string {
+	return fmt.Sprintf("BCD error: %s", e.msg)
+}
+
 // Helper function to handle read errors
 func handleReadError(err error, consecutiveErrors *int, maxErrors int, c *Client) bool {
 	*consecutiveErrors++

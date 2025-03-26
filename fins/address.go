@@ -1,6 +1,7 @@
 package fins
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 )
@@ -16,6 +17,13 @@ type finsAddress struct {
 type Address struct {
 	finsAddress finsAddress
 	tcpAddress  *net.TCPAddr // Changed from UDPAddr to TCPAddr
+}
+
+// memoryAddress represents a PLC memory address
+type MemoryAddress struct {
+	memoryArea byte
+	address    uint16
+	bitOffset  byte
 }
 
 // NewAddress creates a new Address instance with TCP addressing
@@ -62,4 +70,45 @@ func (a Address) Clone() Address {
 			unit:    a.finsAddress.unit,
 		},
 	}
+}
+
+// MEMORY ADDRESS FUNCTIONS
+func (m MemoryAddress) GetMemoryArea() byte {
+	return m.memoryArea
+}
+func (m MemoryAddress) GetAddress() uint16 {
+	return m.address
+}
+func (m MemoryAddress) GetBitOffset() byte {
+	return m.bitOffset
+}
+
+// Create memory address helpers
+func memAddr(memoryArea byte, address uint16) MemoryAddress {
+	return memAddrWithBitOffset(memoryArea, address, 0)
+}
+
+func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) MemoryAddress {
+	return MemoryAddress{memoryArea, address, bitOffset}
+}
+
+// Memory address encoding/decoding
+func encodeMemoryAddress(memoryAddr MemoryAddress) []byte {
+	bytes := make([]byte, 4)
+	bytes[0] = memoryAddr.memoryArea
+	binary.BigEndian.PutUint16(bytes[1:3], memoryAddr.address)
+	bytes[3] = memoryAddr.bitOffset
+	return bytes
+}
+
+// NOTE: Only used in server.go
+func DecodeMemoryAddress(data []byte) (MemoryAddress, error) {
+	if len(data) < 4 {
+		return MemoryAddress{}, fmt.Errorf("insufficient data for memory address: expected 4 bytes, got %d", len(data))
+	}
+	return MemoryAddress{
+		memoryArea: data[0],
+		address:    binary.BigEndian.Uint16(data[1:3]),
+		bitOffset:  data[3],
+	}, nil
 }

@@ -138,3 +138,17 @@ func (c *Client) nextHeader() *Header {
 	header := defaultCommandHeader(c.src, c.dst, sid)
 	return &header
 }
+
+func (c *Client) incrementSid() byte {
+	c.Lock() // Thread-safe SID incrementation
+	c.sid++
+	if c.sid == 0 {
+		c.sid = 1
+	}
+	sid := c.sid
+	c.Unlock()
+
+	// Clearing cell of storage for new response
+	c.resp[sid] = make(chan Response)
+	return sid
+}

@@ -3,14 +3,13 @@ package main
 
 import (
 	"fmt"
+	"folke99/gofins/fins"
 	"log"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"folke99/gofins/fins"
 )
 
 type KilnTag struct {
@@ -138,7 +137,7 @@ func printHeader() {
 }
 
 func testTCPConnection(ip string, port int) error {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), 5*time.Second)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, fmt.Sprintf("%d", port)), 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("TCP connection failed: %v", err)
 	}
