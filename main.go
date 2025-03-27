@@ -87,7 +87,7 @@ func main() {
 	}
 
 	log.Printf("Creating FINS connection...")
-	client, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635)) //fins.NewClient(clientAddr, plcAddr)
+	client, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635))
 	if err != nil {
 		log.Printf("❌ Connection failed: %v", err)
 		time.Sleep(2 * time.Second)

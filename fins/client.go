@@ -29,7 +29,6 @@ type Client struct {
 const (
 	DEFAULT_RESPONSE_TIMEOUT = 2000
 	DEFAULT_CONNECT_TIMEOUT  = 5000
-	TCP_HEADER_SIZE          = 16
 	MAX_PACKET_SIZE          = 2048
 )
 
