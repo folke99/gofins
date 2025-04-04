@@ -70,23 +70,6 @@ func defaultCommandHeader(src finsAddress, dst finsAddress, serviceID uint8) Hea
 	return defaultHeader(true, true, src, dst, serviceID)
 }
 
-// defaultResponseHeader creates a new response Header based on a command Header
-func defaultResponseHeader(commandHeader Header) Header {
-	// For response, swap source and destination addresses
-	return Header{
-		icf: 0x00, // Response without response required
-		rsv: DefaultReserved,
-		gct: commandHeader.gct,
-		dna: commandHeader.sna,
-		da1: commandHeader.sa1,
-		da2: commandHeader.sa2,
-		sna: commandHeader.dna,
-		sa1: commandHeader.da1,
-		sa2: commandHeader.da2,
-		sid: commandHeader.sid,
-	}
-}
-
 // encodeHeader converts a Header to its byte representation
 func encodeHeader(h Header) []byte {
 	return []byte{

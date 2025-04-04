@@ -2,9 +2,6 @@ package fins
 
 import (
 	"fmt"
-	"io"
-	"log"
-	"net"
 	"time"
 )
 
@@ -52,31 +49,19 @@ func (e BCDError) Error() string {
 	return fmt.Sprintf("BCD error: %s", e.msg)
 }
 
-// Helper function to handle read errors
-func handleReadError(err error, consecutiveErrors *int, maxErrors int, c *Client) bool {
-	*consecutiveErrors++
-	if *consecutiveErrors >= maxErrors {
-		log.Printf("Too many consecutive errors (%d), exiting listen loop", *consecutiveErrors)
-		c.closed = true
-		return true
-	}
+// FatalErrorCode represents fatal error information as bit flags
+type FatalErrorCode uint16
 
-	if c.closed {
-		return true
-	}
-
-	if err == io.EOF {
-		log.Printf("Connection closed by peer (EOF)")
-		c.closed = true
-		return true
-	}
-
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		log.Printf("Read timeout: %v", netErr)
-	} else {
-		log.Printf("Read error: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-	return false
-}
+const (
+	ErrorWatchDogTimer FatalErrorCode = 1 << 0  // Watch dog timer error
+	ErrorFALS          FatalErrorCode = 1 << 6  // FALS error
+	ErrorFatalSFC      FatalErrorCode = 1 << 7  // Fatal SFC error
+	ErrorCycleTimeOver FatalErrorCode = 1 << 8  // Cycle time over
+	ErrorProgram       FatalErrorCode = 1 << 9  // Program error
+	ErrorIOSetting     FatalErrorCode = 1 << 10 // I/O setting error
+	ErrorIOOverflow    FatalErrorCode = 1 << 11 // I/O point overflow
+	ErrorCPUBus        FatalErrorCode = 1 << 12 // CPU bus error
+	ErrorDuplication   FatalErrorCode = 1 << 13 // Duplication error
+	ErrorIOBus         FatalErrorCode = 1 << 14 // I/O bus error
+	ErrorMemory        FatalErrorCode = 1 << 15 // Memory error
+)

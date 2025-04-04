@@ -72,7 +72,9 @@ func (a Address) Clone() Address {
 	}
 }
 
-// MEMORY ADDRESS FUNCTIONS
+// ---------- MEMORY ADDRESS FUNCTIONS ----------
+
+// Getters
 func (m MemoryAddress) GetMemoryArea() byte {
 	return m.memoryArea
 }
@@ -83,11 +85,12 @@ func (m MemoryAddress) GetBitOffset() byte {
 	return m.bitOffset
 }
 
-// Create memory address helpers
+// Create MemoryAddress
 func memAddr(memoryArea byte, address uint16) MemoryAddress {
-	return memAddrWithBitOffset(memoryArea, address, 0)
+	return MemoryAddress{memoryArea, address, 0}
 }
 
+// Create MemoryAddress with offset
 func memAddrWithBitOffset(memoryArea byte, address uint16, bitOffset byte) MemoryAddress {
 	return MemoryAddress{memoryArea, address, bitOffset}
 }

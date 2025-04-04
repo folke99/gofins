@@ -17,6 +17,7 @@ type Client struct {
 	conn net.Conn
 	resp []chan Response
 	sync.Mutex
+	plcAddr           Address
 	dst               finsAddress
 	src               finsAddress
 	sid               byte
@@ -24,16 +25,19 @@ type Client struct {
 	responseTimeoutMs time.Duration
 	byteOrder         binary.ByteOrder
 	reader            *bufio.Reader
+	listening         bool
 }
 
+// TODO: Tweak these values. Currently picked at random
 const (
-	DEFAULT_RESPONSE_TIMEOUT = 2000
+	DEFAULT_RESPONSE_TIMEOUT = 10000
 	DEFAULT_CONNECT_TIMEOUT  = 5000
 	MAX_PACKET_SIZE          = 2048
 )
 
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
+	c.plcAddr = plcAddr
 	c.dst = plcAddr.finsAddress
 	c.src = localAddr.finsAddress
 	c.responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT
@@ -49,13 +53,6 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 		return nil, fmt.Errorf("failed to establish TCP connection: %w", err)
 	}
 
-	// Set read timeout on the connection
-	err = conn.SetReadDeadline(time.Now().Add(time.Duration(c.responseTimeoutMs) * time.Millisecond))
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to set read deadline: %w", err)
-	}
-
 	c.conn = conn
 	c.reader = bufio.NewReader(conn)
 	c.resp = make([]chan Response, 256)
@@ -69,6 +66,7 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 		return nil, err
 	}
 
+	// TODO: Should probably be removed before final version, kept as test for now
 	err = c.testInitialConnection()
 	if err != nil {
 		return nil, err
@@ -76,11 +74,23 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 
 	go c.listenLoop()
 
+	// Testing specific endpoints
 	err = c.TestEndpoints()
 	if err != nil {
 		log.Printf("Error testing endpoints: %f", err)
 	}
 
+	status, err := c.Status()
+	if err != nil {
+		log.Printf("error while reading status: %v", err)
+	} else {
+		log.Printf("PLC status: %s\n", status.Status.String())
+		log.Printf("PLC mode: %s\n", status.Mode.String())
+		log.Printf("Status codes: %+v", status)
+	}
+
+	// Keep code from fully compiling TODO: Remove
+	time.Sleep(100000000000000)
 	return c, nil
 }
 
@@ -115,9 +125,11 @@ func (c *Client) sendCommand(command []byte) (*Response, error) {
 		return nil, fmt.Errorf("connection is closed")
 	}
 
+	// Send initiation frame
 	commandLength := len(command)
 	c.sendInitFrame((18 + commandLength), 2, false)
 
+	// Create packet
 	header := c.nextHeader()
 	fullPacket := encodeHeader(*header)
 	fullPacket = append(fullPacket, command...)
@@ -125,32 +137,24 @@ func (c *Client) sendCommand(command []byte) (*Response, error) {
 	log.Printf("📨 Sending FINS command - Service ID: %d", header.sid)
 	log.Printf("FullPacket: % X", fullPacket)
 
-	// Create response channel if it doesn't exist
+	// Create response channel for SID if it doesn't exist
 	if c.resp[header.sid] == nil {
 		c.resp[header.sid] = make(chan Response, 1)
 		log.Printf("Response channel created for sid, %+v", header.sid)
 	}
 
-	// Send command with retries
-	// TODO: Do we need to retry if the first fail?
-	var lastError error
-	for i := 0; i < 3; i++ {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
-			return nil, fmt.Errorf("failed to set write deadline: %w", err)
-		}
+	//NOTE: The removal of this SetWriteDeadline() has greatly increased stability.
+	//TODO: Reimplement SetWriteDeadline() with a better deadline?
 
-		_, err := c.conn.Write(fullPacket)
-		if err == nil {
-			log.Printf("Command sent successfully")
-			break
-		}
-		lastError = err
-		log.Printf("Write attempt %d failed: %v", i+1, err)
-		time.Sleep(100 * time.Millisecond)
-	}
+	// if err := c.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+	// 	return nil, fmt.Errorf("failed to set write deadline: %w", err)
+	// }
 
-	if lastError != nil {
-		return nil, fmt.Errorf("failed to send command after retries: %w", lastError)
+	_, err := c.conn.Write(fullPacket)
+	if err != nil {
+		log.Printf("❌ Failed to send initiation packet!")
+	} else {
+		log.Printf("Command sent successfully")
 	}
 
 	// Wait for response
@@ -159,6 +163,7 @@ func (c *Client) sendCommand(command []byte) (*Response, error) {
 		timeout = 10 * time.Second
 	}
 
+	// Acquire response channel
 	select {
 	case resp, ok := <-c.resp[header.sid]:
 		if !ok {
@@ -183,8 +188,9 @@ func (c *Client) sendInitFrame(length, commandCode int, initCon bool) error {
 		initFrame = append(initFrame, 0x00, 0x00, 0x00, 0x00) // Client node address (0 = auto-assign)
 	}
 
+	log.Printf("Sending init frame: %02X with the connection: %+v", initFrame, c.conn)
 	if _, err := c.conn.Write(initFrame); err != nil {
-		log.Printf("❌ Failed to send init frame: %v", err)
+		log.Printf("❌ Failed to send init frame: %v, Reconnecting", err)
 		return err
 	}
 	return nil

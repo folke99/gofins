@@ -8,49 +8,71 @@ import (
 	"time"
 )
 
-// Constants for FINS protocol
 const (
-	FINS_TCP_HEADER_LENGTH     = 16     // Standard FINS/TCP header length
 	FINS_MIN_FRAME_LENGTH      = 8      // Minimum frame length
 	FINS_COMMAND_HEADER_LENGTH = 12     // FINS command header length
-	FINS_MAGIC                 = "FINS" // FINS magic number
+	FINS_MARKER                = "FINS" // FINS magic number
 )
 
 func (c *Client) listenLoop() {
 	defer func() {
+		c.Lock()
+		c.listening = false
+		c.Unlock()
 		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in listenLoop: %v", r)
-			debug.PrintStack()
+			log.Printf("🚨 Panic recovered in listenLoop: %s", debug.Stack())
+
+			// Log connection details if available
+			if c.conn != nil {
+				log.Printf("Connection details - Local: %v, Remote: %v",
+					c.conn.LocalAddr(),
+					c.conn.RemoteAddr())
+			}
 		}
-		log.Printf("Exiting listenLoop: %v", c.conn.LocalAddr())
 	}()
 
-	// Create scanner with a sufficiently large buffer
-	scanner := bufio.NewScanner(c.reader)
+	// CRITICAL: Get a local copy of the connection to prevent race conditions
+	c.Lock()
+	c.listening = true
+	localConn := c.conn
+	localReader := c.reader
+	c.Unlock()
+
+	if localConn == nil {
+		log.Printf("Connection is nil in listenLoop, exiting")
+		return
+	}
+
+	log.Printf("Starting listen loop with connection: %v", localConn.LocalAddr())
+
+	// Set no read deadline on our local connection reference
+	if err := localConn.SetReadDeadline(time.Time{}); err != nil {
+		log.Printf("Failed to clear read deadline: %v", err)
+		return
+	}
+
+	// Create scanner with our local reader reference
+	scanner := bufio.NewScanner(localReader)
 	scanBuffer := make([]byte, MAX_PACKET_SIZE)
 	scanner.Buffer(scanBuffer, MAX_PACKET_SIZE)
 
 	// Set split function for FINS protocol
 	scanner.Split(c.finsSplitFunc)
 
-	// Set no read timeout
-	if err := c.conn.SetReadDeadline(time.Time{}); err != nil {
-		log.Printf("Failed to clear read deadline: %v", err)
-	}
-
 	for scanner.Scan() {
+		// Make sure the client hasn't been closed while we were scanning
 		if c.closed {
 			log.Printf("Connection closed, exiting listen loop")
 			return
 		}
 
-		// Get and copy the complete frame (since scanner buffer is reused)
+		// Process frame data
 		frameData := scanner.Bytes()
 		frameCopy := make([]byte, len(frameData))
 		copy(frameCopy, frameData)
 
-		// Extract FINS message (skip TCP header)
-		messageBuf := frameCopy[16:] // Skip the 16-byte header
+		// Extract FINS message (skip header)
+		messageBuf := frameCopy[16:]
 
 		// Decode the response
 		ans, err := DecodeResponse(messageBuf)
@@ -64,12 +86,18 @@ func (c *Client) listenLoop() {
 		c.channelHandler(ans)
 	}
 
+	// Check if the client has been closed properly
+	if c.closed {
+		log.Printf("Client closed, exiting listen loop cleanly")
+		return
+	}
+
 	// Handle scanner errors
-	if err := scanner.Err(); err != nil && !c.closed {
+	if err := scanner.Err(); err != nil {
 		log.Printf("Scanner error: %v, attempting to recover", err)
 
-		// If connection is still valid, restart the listenLoop
-		go c.listenLoop()
+		// Show the error details for debugging
+		log.Printf("Error details: %T %v", err, err)
 	}
 }
 
@@ -81,12 +109,12 @@ func (c *Client) finsSplitFunc(data []byte, atEOF bool) (advance int, token []by
 	}
 
 	// Check for FINS marker
-	if string(data[0:4]) != FINS_MAGIC {
-		log.Printf("Invalid marker: %q, expected: %q", string(data[0:4]), FINS_MAGIC)
+	if string(data[0:4]) != FINS_MARKER {
+		log.Printf("Invalid marker: %q, expected: %q", string(data[0:4]), FINS_MARKER)
 
 		// Try to resync by searching for the next FINS marker
 		for i := 1; i < len(data)-3; i++ {
-			if string(data[i:i+4]) == FINS_MAGIC {
+			if string(data[i:i+4]) == FINS_MARKER {
 				log.Printf("Resyncing, skipping %d bytes", i)
 				return i, nil, nil
 			}

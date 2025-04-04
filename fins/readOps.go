@@ -104,7 +104,7 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 	return data, nil
 }
 
-func (c *Client) ReadPLCStatus() error {
+func (c *Client) ReadPLCStatus() (*Response, error) {
 	log.Println("📡 Attempting to read PLC status...")
 
 	// Command bytes for PLC Status Read (06 01)
@@ -113,19 +113,16 @@ func (c *Client) ReadPLCStatus() error {
 	// Send FINS command
 	resp, err := c.sendCommand(commandBytes)
 	if err != nil {
-		return fmt.Errorf("failed to send PLC status command: %v", err)
+		return &Response{}, fmt.Errorf("failed to send PLC status command: %v", err)
 	}
-
-	log.Println("✅ Command sent successfully")
-	log.Printf("📩 Response received: %+v", resp)
 
 	// Decode the response to check the command code and structure
 	err = checkResponse(resp, err)
 	if err != nil {
-		return fmt.Errorf("failed to parse FINS response: %v", err)
+		return &Response{}, fmt.Errorf("failed to parse FINS response: %v", err)
 	}
 
-	return nil
+	return resp, nil
 }
 
 // ReadClock Reads the PLC clock

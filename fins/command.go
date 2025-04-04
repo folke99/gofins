@@ -5,7 +5,7 @@ import (
 	"folke99/gofins/mapping"
 )
 
-// Command creation functions
+// ---------- Command creation functions ----------
 func readCommand(memoryAddr MemoryAddress, itemCount uint16) []byte {
 	commandData := make([]byte, 2, 8)
 	binary.BigEndian.PutUint16(commandData[0:2], mapping.CommandCodeMemoryAreaRead)
