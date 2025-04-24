@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Recreates plc connection and starts the listenloop
 func (c *Client) Reconnect() error {
 	c.Lock()
 	defer c.Unlock()
@@ -22,7 +23,6 @@ func (c *Client) Reconnect() error {
 		return fmt.Errorf("cannot reconnect: connection already closed")
 	}
 
-	// Close existing connection
 	c.conn.Close()
 
 	// Attempt reconnection with backoff
@@ -37,7 +37,6 @@ func (c *Client) Reconnect() error {
 		log.Printf("Attempting to reconnect in %v", backoff)
 		time.Sleep(backoff)
 
-		// Recreate client connection similar to NewClient
 		dialer := net.Dialer{
 			Timeout: time.Duration(DEFAULT_CONNECT_TIMEOUT) * time.Millisecond,
 		}
@@ -60,10 +59,9 @@ func (c *Client) Reconnect() error {
 			continue
 		}
 
-		// Restart listener
 		go c.listenLoop()
 
-		log.Println("🔄 Connection successfully reestablished")
+		log.Println("🔄 Connection successfully reestablished") //TODO: Remove trace?
 		return nil
 	}
 
@@ -87,7 +85,7 @@ type PLCStatus struct {
 }
 
 func (c *Client) Status() (*PLCStatus, error) {
-	log.Printf("Getting status...")
+	log.Printf("Getting status...") // TODO: remove trace
 	response, err := c.ReadPLCStatus()
 	if err != nil {
 		return nil, err

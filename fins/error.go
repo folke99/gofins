@@ -6,7 +6,6 @@ import (
 )
 
 // Client errors
-
 type ResponseTimeoutError struct {
 	duration time.Duration
 }
@@ -24,7 +23,6 @@ func (e IncompatibleMemoryAreaError) Error() string {
 }
 
 // Driver errors
-
 type BCDBadDigitError struct {
 	v   string
 	val uint64

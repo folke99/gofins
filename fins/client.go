@@ -15,7 +15,7 @@ import (
 // Client Omron FINS client using TCP
 type Client struct {
 	conn net.Conn
-	resp []chan Response
+	// resp []chan Response
 	sync.Mutex
 	plcAddr           Address
 	dst               finsAddress
@@ -26,9 +26,12 @@ type Client struct {
 	byteOrder         binary.ByteOrder
 	reader            *bufio.Reader
 	listening         bool
+
+	resp      map[uint8]chan Response
+	respMutex sync.Mutex // Dedicated mutex for response channels
 }
 
-// TODO: Tweak these values. Currently picked at random
+// Note: These values are not optimized and can be further improved upon.
 const (
 	DEFAULT_RESPONSE_TIMEOUT = 10000
 	DEFAULT_CONNECT_TIMEOUT  = 5000
@@ -55,7 +58,7 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 
 	c.conn = conn
 	c.reader = bufio.NewReader(conn)
-	c.resp = make([]chan Response, 256)
+	c.resp = make(map[uint8]chan Response)
 
 	for i := range c.resp {
 		c.resp[i] = make(chan Response, 1)
@@ -66,48 +69,33 @@ func NewClient(localAddr, plcAddr Address) (*Client, error) {
 		return nil, err
 	}
 
-	// TODO: Should probably be removed before final version, kept as test for now
-	err = c.testInitialConnection()
-	if err != nil {
-		return nil, err
-	}
-
 	go c.listenLoop()
-
-	// Testing specific endpoints
-	err = c.TestEndpoints()
-	if err != nil {
-		log.Printf("Error testing endpoints: %f", err)
-	}
-
-	status, err := c.Status()
-	if err != nil {
-		log.Printf("error while reading status: %v", err)
-	} else {
-		log.Printf("PLC status: %s\n", status.Status.String())
-		log.Printf("PLC mode: %s\n", status.Mode.String())
-		log.Printf("Status codes: %+v", status)
-	}
-
-	// Keep code from fully compiling TODO: Remove
-	time.Sleep(100000000000000)
 	return c, nil
 }
 
 // Close gracefully closes the TCP connection
-func (c *Client) Close() {
+func (c *Client) Close() error {
 	c.Lock()
 	defer c.Unlock()
 
-	if !c.closed {
-		c.closed = true
-		c.conn.Close()
-
-		// Clean up response channels
-		for i := range c.resp {
-			close(c.resp[i])
-		}
+	if c.closed {
+		return nil
 	}
+
+	c.closed = true
+
+	c.respMutex.Lock()
+	for sid, ch := range c.resp {
+		close(ch)
+		delete(c.resp, sid)
+	}
+	c.respMutex.Unlock()
+
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+
+	return nil
 }
 
 func checkResponse(r *Response, e error) error {
@@ -125,47 +113,43 @@ func (c *Client) sendCommand(command []byte) (*Response, error) {
 		return nil, fmt.Errorf("connection is closed")
 	}
 
-	// Send initiation frame
 	commandLength := len(command)
 	c.sendInitFrame((18 + commandLength), 2, false)
 
-	// Create packet
 	header := c.nextHeader()
 	fullPacket := encodeHeader(*header)
 	fullPacket = append(fullPacket, command...)
 
-	log.Printf("📨 Sending FINS command - Service ID: %d", header.sid)
-	log.Printf("FullPacket: % X", fullPacket)
+	log.Printf("📨 Sending FINS command - Service ID: %d", header.sid) // TODO: remove trace
+	log.Printf("FullPacket: % X", fullPacket)                         // TODO: remove trace
 
-	// Create response channel for SID if it doesn't exist
-	if c.resp[header.sid] == nil {
-		c.resp[header.sid] = make(chan Response, 1)
-		log.Printf("Response channel created for sid, %+v", header.sid)
-	}
+	responseChan := make(chan Response, 1)
 
-	//NOTE: The removal of this SetWriteDeadline() has greatly increased stability.
-	//TODO: Reimplement SetWriteDeadline() with a better deadline?
+	c.respMutex.Lock()
+	c.resp[header.sid] = responseChan
+	c.respMutex.Unlock()
 
-	// if err := c.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
-	// 	return nil, fmt.Errorf("failed to set write deadline: %w", err)
-	// }
+	defer func() {
+		c.respMutex.Lock()
+		delete(c.resp, header.sid)
+		c.respMutex.Unlock()
+	}()
 
 	_, err := c.conn.Write(fullPacket)
 	if err != nil {
 		log.Printf("❌ Failed to send initiation packet!")
-	} else {
-		log.Printf("Command sent successfully")
+		return nil, fmt.Errorf("failed to send packet: %w", err)
 	}
+	log.Printf("Command sent successfully") // TODO: remove trace
 
-	// Wait for response
+	// Wait for response with timeout
 	timeout := time.Duration(c.responseTimeoutMs) * time.Millisecond
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
 
-	// Acquire response channel
 	select {
-	case resp, ok := <-c.resp[header.sid]:
+	case resp, ok := <-responseChan:
 		if !ok {
 			return nil, fmt.Errorf("response channel closed")
 		}
@@ -188,7 +172,7 @@ func (c *Client) sendInitFrame(length, commandCode int, initCon bool) error {
 		initFrame = append(initFrame, 0x00, 0x00, 0x00, 0x00) // Client node address (0 = auto-assign)
 	}
 
-	log.Printf("Sending init frame: %02X with the connection: %+v", initFrame, c.conn)
+	log.Printf("Sending init frame: %02X with the connection: %+v", initFrame, c.conn) // TODO: remove trace
 	if _, err := c.conn.Write(initFrame); err != nil {
 		log.Printf("❌ Failed to send init frame: %v, Reconnecting", err)
 		return err
@@ -217,10 +201,9 @@ func (c *Client) sendConnectionRequest() error {
 	clientNode := response[19] // Client node assigned by PLC
 	serverNode := response[23] // Server node
 
-	log.Printf("✅ Connection established. Client Node: %d, Server Node: %d Response: %02X", clientNode, serverNode, response)
+	log.Printf("✅ Connection established. Client Node: %d, Server Node: %d Response: %02X", clientNode, serverNode, response) // TODO: remove?
 
 	// Store these values for later messages
-
 	c.src.node = clientNode
 	c.dst.node = serverNode
 
@@ -234,7 +217,7 @@ func (c *Client) SetTimeoutMs(t uint) {
 	c.responseTimeoutMs = time.Duration(t)
 }
 
-// SetKeepAlive enables TCP keepalive with the specified interval
+// SetKeepAlive enables keepalive with the specified interval
 func (c *Client) SetKeepAlive(enabled bool, interval time.Duration) error {
 	tcpConn, ok := c.conn.(*net.TCPConn)
 	if !ok {

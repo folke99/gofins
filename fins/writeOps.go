@@ -26,7 +26,6 @@ func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
 
-	// Convert string to bytes
 	b := []byte(s)
 
 	// Ensure word alignment by padding with a null byte if needed
@@ -34,7 +33,6 @@ func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
 		b = append(b, 0x00)
 	}
 
-	// Write to PLC
 	return c.WriteBytes(memoryArea, address, b)
 }
 
@@ -43,7 +41,7 @@ func (c *Client) WriteBytes(memoryArea byte, address uint16, b []byte) error {
 		return IncompatibleMemoryAreaError{memoryArea}
 	}
 
-	// Ensure byte slice is an even length (word-aligned)
+	// word-alignment
 	if len(b)%2 != 0 {
 		return fmt.Errorf("data length must be a multiple of 2 for word-based memory area")
 	}

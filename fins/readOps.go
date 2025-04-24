@@ -17,7 +17,7 @@ func (c *Client) ReadWords(memoryArea byte, address uint16, readCount uint16) ([
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
 
-	//tracing
+	//tracing TODO: remove
 	log.Printf("Response from ReadWords(), %+v", r)
 
 	if e != nil {
@@ -49,7 +49,7 @@ func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
 
-	//tracing
+	//tracing TODO: remove
 	log.Printf("Response from ReadBytes(), %+v", r)
 
 	if e != nil {
@@ -59,7 +59,7 @@ func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([
 	return r.data, nil
 }
 
-// ReadString reads a string from the PLC's DM memory area NEW
+// ReadString reads a string from the PLC's DM memory area
 func (c *Client) ReadString(memoryArea byte, address uint16, byteCount uint16) (string, error) {
 	if !mapping.CheckIsWordMemoryArea(memoryArea) {
 		return "", IncompatibleMemoryAreaError{memoryArea}
@@ -70,13 +70,12 @@ func (c *Client) ReadString(memoryArea byte, address uint16, byteCount uint16) (
 		byteCount++
 	}
 
-	// Read bytes from PLC
 	data, err := c.ReadBytes(memoryArea, address, byteCount)
 	if err != nil {
 		return "", err
 	}
 
-	// Trim null bytes (if string was null-terminated)
+	// Trim null bytes
 	return string(bytes.TrimRight(data, "\x00")), nil
 }
 
@@ -89,7 +88,7 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 	r, e := c.sendCommand(command)
 	e = checkResponse(r, e)
 
-	//tracing
+	//tracing TODO: remove
 	log.Printf("Response from ReadBits(), %+v", r)
 
 	if e != nil {
@@ -105,18 +104,15 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 }
 
 func (c *Client) ReadPLCStatus() (*Response, error) {
-	log.Println("📡 Attempting to read PLC status...")
+	log.Println("📡 Attempting to read PLC status...") // TODO: Remove trace
 
-	// Command bytes for PLC Status Read (06 01)
 	commandBytes := []byte{0x06, 0x01}
 
-	// Send FINS command
 	resp, err := c.sendCommand(commandBytes)
 	if err != nil {
 		return &Response{}, fmt.Errorf("failed to send PLC status command: %v", err)
 	}
 
-	// Decode the response to check the command code and structure
 	err = checkResponse(resp, err)
 	if err != nil {
 		return &Response{}, fmt.Errorf("failed to parse FINS response: %v", err)

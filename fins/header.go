@@ -2,6 +2,7 @@ package fins
 
 import (
 	"fmt"
+	"log"
 )
 
 // Header represents a FINS frame header structure
@@ -116,6 +117,7 @@ func (h Header) IsResponseRequired() bool {
 	return h.icf&ICFResponseRequired != 0
 }
 
+// Increments the SID and returns the next header
 func (c *Client) nextHeader() *Header {
 	sid := c.incrementSid()
 	header := defaultCommandHeader(c.src, c.dst, sid)
@@ -123,15 +125,30 @@ func (c *Client) nextHeader() *Header {
 }
 
 func (c *Client) incrementSid() byte {
-	c.Lock() // Thread-safe SID incrementation
-	c.sid++
-	if c.sid == 0 {
-		c.sid = 1
+	c.Lock()
+	startSid := c.sid
+	for {
+		c.sid++
+		if c.sid == 0 {
+			c.sid = 1
+		}
+
+		c.respMutex.Lock()
+		_, inUse := c.resp[c.sid]
+		c.respMutex.Unlock()
+
+		if !inUse {
+			break
+		}
+
+		if c.sid == startSid {
+			log.Printf("Warning: All SIDs appear to be in use, reusing SID %d", c.sid)
+			break
+		}
 	}
+
 	sid := c.sid
 	c.Unlock()
 
-	// Clearing cell of storage for new response
-	c.resp[sid] = make(chan Response)
 	return sid
 }

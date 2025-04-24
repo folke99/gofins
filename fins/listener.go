@@ -11,7 +11,7 @@ import (
 const (
 	FINS_MIN_FRAME_LENGTH      = 8      // Minimum frame length
 	FINS_COMMAND_HEADER_LENGTH = 12     // FINS command header length
-	FINS_MARKER                = "FINS" // FINS magic number
+	FINS_MARKER                = "FINS" // FINS initiation frame number
 )
 
 func (c *Client) listenLoop() {
@@ -19,10 +19,16 @@ func (c *Client) listenLoop() {
 		c.Lock()
 		c.listening = false
 		c.Unlock()
+
+		c.respMutex.Lock()
+		for sid, ch := range c.resp {
+			close(ch)
+			delete(c.resp, sid)
+		}
+		c.respMutex.Unlock()
+
 		if r := recover(); r != nil {
 			log.Printf("🚨 Panic recovered in listenLoop: %s", debug.Stack())
-
-			// Log connection details if available
 			if c.conn != nil {
 				log.Printf("Connection details - Local: %v, Remote: %v",
 					c.conn.LocalAddr(),
@@ -31,7 +37,6 @@ func (c *Client) listenLoop() {
 		}
 	}()
 
-	// CRITICAL: Get a local copy of the connection to prevent race conditions
 	c.Lock()
 	c.listening = true
 	localConn := c.conn
@@ -43,30 +48,25 @@ func (c *Client) listenLoop() {
 		return
 	}
 
-	log.Printf("Starting listen loop with connection: %v", localConn.LocalAddr())
+	log.Printf("Starting listen loop with connection: %v", localConn.LocalAddr()) // TODO: Remove trace?
 
-	// Set no read deadline on our local connection reference
 	if err := localConn.SetReadDeadline(time.Time{}); err != nil {
 		log.Printf("Failed to clear read deadline: %v", err)
 		return
 	}
 
-	// Create scanner with our local reader reference
 	scanner := bufio.NewScanner(localReader)
 	scanBuffer := make([]byte, MAX_PACKET_SIZE)
 	scanner.Buffer(scanBuffer, MAX_PACKET_SIZE)
 
-	// Set split function for FINS protocol
 	scanner.Split(c.finsSplitFunc)
 
 	for scanner.Scan() {
-		// Make sure the client hasn't been closed while we were scanning
 		if c.closed {
 			log.Printf("Connection closed, exiting listen loop")
 			return
 		}
 
-		// Process frame data
 		frameData := scanner.Bytes()
 		frameCopy := make([]byte, len(frameData))
 		copy(frameCopy, frameData)
@@ -74,7 +74,6 @@ func (c *Client) listenLoop() {
 		// Extract FINS message (skip header)
 		messageBuf := frameCopy[16:]
 
-		// Decode the response
 		ans, err := DecodeResponse(messageBuf)
 		if err != nil {
 			log.Printf("Failed to decode response: %v", err)
@@ -82,21 +81,16 @@ func (c *Client) listenLoop() {
 			continue
 		}
 
-		// Send response to appropriate channel
 		c.channelHandler(ans)
 	}
 
-	// Check if the client has been closed properly
 	if c.closed {
 		log.Printf("Client closed, exiting listen loop cleanly")
 		return
 	}
 
-	// Handle scanner errors
 	if err := scanner.Err(); err != nil {
 		log.Printf("Scanner error: %v, attempting to recover", err)
-
-		// Show the error details for debugging
 		log.Printf("Error details: %T %v", err, err)
 	}
 }
@@ -105,7 +99,7 @@ func (c *Client) listenLoop() {
 func (c *Client) finsSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	// Need at least 8 bytes for the header
 	if len(data) < 8 {
-		return 0, nil, nil // Need more data
+		return 0, nil, nil
 	}
 
 	// Check for FINS marker
@@ -120,44 +114,57 @@ func (c *Client) finsSplitFunc(data []byte, atEOF bool) (advance int, token []by
 			}
 		}
 
-		// Skip one byte if we couldn't find the marker
 		return 1, nil, nil
 	}
 
-	// Parse message length
 	messageLength := binary.BigEndian.Uint32(data[4:8])
 
-	// Sanity check message length
 	if messageLength == 0 || messageLength > MAX_PACKET_SIZE {
 		log.Printf("Invalid message length: %d, skipping header", messageLength)
 		return 8, nil, nil
 	}
 
-	// Check if we have the complete message
-	totalLength := 8 + int(messageLength) // header + payload
+	totalLength := 8 + int(messageLength)
 	if len(data) < totalLength {
 		return 0, nil, nil // Need more data
 	}
 
-	// Return the complete message
 	return totalLength, data[:totalLength], nil
 }
 
-// Handle decoded response
+// Allocating response channels based on SIDs
 func (c *Client) channelHandler(ans Response) {
 	sid := ans.header.sid
 
-	// Ensure response channel exists
-	c.Lock()
-	if c.resp[sid] == nil {
-		c.resp[sid] = make(chan Response, 1)
-	}
-	c.Unlock()
+	c.respMutex.Lock()
+	responseChan, exists := c.resp[sid]
+	c.respMutex.Unlock()
 
-	// Try to send response non-blocking
+	if !exists {
+		log.Printf("No waiting request found for SID %d, response discarded", sid)
+		return
+	}
+
 	select {
-	case c.resp[sid] <- ans:
+	case responseChan <- ans:
+		log.Printf("Response for SID %d delivered successfully", sid)
 	default:
-		log.Printf("Channel for SID %d is full or closed", sid)
+		log.Printf("Channel for SID %d is full or closed, attempting recovery", sid)
+
+		// Try to empty response channel
+		select {
+		case <-responseChan:
+			log.Printf("Successfully drained channel for SID %d, retrying delivery", sid)
+		default:
+			log.Printf("Channel for SID %d wasn't full, might be closed", sid)
+		}
+
+		// Try again with timeout
+		select {
+		case responseChan <- ans:
+			log.Printf("Response for SID %d delivered after recovery attempt", sid)
+		case <-time.After(100 * time.Millisecond):
+			log.Printf("Unable to deliver response for SID %d after recovery attempt", sid)
+		}
 	}
 }

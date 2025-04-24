@@ -4,7 +4,9 @@ package main
 import (
 	"fmt"
 	"folke99/gofins/fins"
+	"folke99/gofins/mapping"
 	"log"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -80,6 +82,12 @@ func main() {
 	log.Printf("PLC Port: 9635 (hardcoded)")
 
 	log.Printf("\n=== TCP Connection Test ===")
+	//testTCPConnection("10.1.0.33", 9635)
+	if err := testTCPConnection("10.1.0.32", 9532); err != nil {
+		log.Printf("⚠️  TCP test failed: %v", err)
+	} else {
+		log.Printf("✅ TCP connection test successful")
+	}
 	if err := testTCPConnection("10.1.0.33", 9635); err != nil {
 		log.Printf("⚠️  TCP test failed: %v", err)
 	} else {
@@ -87,13 +95,58 @@ func main() {
 	}
 
 	log.Printf("Creating FINS connection...")
-	client, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635)) //fins.NewClient(clientAddr, plcAddr)
+	client32, err := Connect(5000, "10.1.0.32", 9532, localIP, getLocalPort(9532)) //fins.NewClient(clientAddr, plcAddr)
+	if err != nil {
+		log.Printf("❌ Connection failed: %v", err)
+		time.Sleep(2 * time.Second)
+	}
+	client33, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635)) //fins.NewClient(clientAddr, plcAddr)
 	if err != nil {
 		log.Printf("❌ Connection failed: %v", err)
 		time.Sleep(2 * time.Second)
 	}
 
-	defer client.Close()
+	// Write/Read from 10.1.0.33
+	floatTest := float32(42.5)
+	uintTestValue, err := ConvertFloat32ToOmronData(floatTest)
+	if err != nil {
+		log.Printf("Error in ConvertFloat32ToOmronData(floatTest), where floatTest=%f", floatTest)
+	}
+
+	err = client33.WriteWords(mapping.MemoryAreaDMWord, 8172, uintTestValue)
+	if err != nil {
+		log.Printf("failed to write REAL value to fanSpeed (address 8172)")
+	}
+
+	//reading the value back
+	readValue, err := client33.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
+	if err != nil {
+		log.Printf("failed to read REAL value to fanSpeed (address 8172)")
+	} else {
+		log.Printf("✅ Successfully read value")
+	}
+
+	// Write/Read from 10.1.0.32
+	err = client32.WriteWords(mapping.MemoryAreaDMWord, 8172, readValue)
+	if err != nil {
+		log.Printf("failed to write REAL value to fanSpeed (address 8172)")
+	}
+
+	//reading the value back
+	readValue32, err := client32.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
+	if err != nil {
+		log.Printf("failed to read REAL value to fanSpeed (address 8172)")
+	}
+	log.Printf("✅ Successfully read value")
+
+	readvalueFloat, _ := ConvertToFloat32(readValue32)
+
+	log.Printf("Read value as float32: %f (should be 42.5)", readvalueFloat)
+
+	defer func() {
+		client32.Close()
+		client33.Close()
+	}()
 
 }
 
@@ -163,4 +216,75 @@ func getLocalPort(plcPort int) int {
 	tenths := plcPort % 100
 	localPort := (tenths * 100) + 10000
 	return localPort
+}
+
+func ConvertFloat32ToOmronData(value float32) ([]uint16, error) {
+	// Convert to bits and then to hex
+	valBits := math.Float32bits(value)
+	fullHex := fmt.Sprintf("%x", valBits)
+
+	if fullHex == "0" {
+		fullHex = fmt.Sprintf("0000000%s", fullHex)
+	}
+	// Split into 4-digit values
+	hexArray := []string{fullHex[0:4], fullHex[4:8]}
+
+	// Check if converted values is 4-digits otherwise add zeros in the beginning
+	integralHex := hexArray[0]
+	fractionalHex := hexArray[1]
+
+	for len(integralHex) < 4 {
+		integralHex = fmt.Sprintf("0%s", integralHex)
+	}
+
+	for len(fractionalHex) < 4 {
+		fractionalHex = fmt.Sprintf("0%s", fractionalHex)
+	}
+
+	// Convert to uint as Omron want's it
+	integral, err := strconv.ParseUint(integralHex, 16, 32)
+
+	if err != nil {
+		return nil, err
+	}
+
+	fractional, err := strconv.ParseUint(fractionalHex, 16, 32)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Return omron data with values in different order
+	return []uint16{uint16(fractional), uint16(integral)}, nil
+}
+
+func ConvertToFloat32(arr []uint16) (float32, error) {
+	// Convert to hexadecimals
+	integral := fmt.Sprintf("%x", arr[1])
+	fractional := fmt.Sprintf("%x", arr[0])
+
+	// Check if converted values is 4-digits otherwise add zeros in the beginning
+	for len(integral) < 4 {
+		integral = fmt.Sprintf("0%s", integral)
+	}
+
+	for len(fractional) < 4 {
+		fractional = fmt.Sprintf("0%s", fractional)
+	}
+
+	// Add them together to make the whole float value
+	hx := fmt.Sprintf("%s%s", integral, fractional)
+
+	// Parse to Uint32
+	fl, err := strconv.ParseUint(hx, 16, 32)
+
+	if err != nil {
+		return 0.0, err
+	}
+
+	floatVal := math.Float32frombits(uint32(fl))
+	roundedVal := float32(math.Round(float64(floatVal)*10) / 10)
+
+	// Convert to Float32
+	return roundedVal, nil
 }
