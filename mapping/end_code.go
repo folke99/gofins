@@ -1,3 +1,4 @@
+// Package mapping handles mapping of codes. such as, command codes, area codes, status codes, end codes.
 package mapping
 
 // Data taken from Omron document Cat. No. W342-E1-15, pages 155-161

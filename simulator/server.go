@@ -1,3 +1,7 @@
+// Package simulator handle a simulator, a form of soft-plc for testing and validation
+//
+// This simulator misses alot of the logic needed to make it act like an actual omron plc.
+// But it works as a basic soft-plc for testing simple commands.
 package simulator
 
 import (

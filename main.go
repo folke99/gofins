@@ -1,4 +1,4 @@
-// CONNECTOR: Part of connector logic
+// Package main contains main and connector logic.
 package main
 
 import (
@@ -94,58 +94,68 @@ func main() {
 		log.Printf("✅ TCP connection test successful")
 	}
 
+	// client33, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635)) //fins.NewClient(clientAddr, plcAddr)
+	// if err != nil {
+	// 	log.Printf("❌ Connection failed: %v", err)
+	// 	time.Sleep(2 * time.Second)
+	// }
+
 	log.Printf("Creating FINS connection...")
 	client32, err := Connect(5000, "10.1.0.32", 9532, localIP, getLocalPort(9532)) //fins.NewClient(clientAddr, plcAddr)
 	if err != nil {
 		log.Printf("❌ Connection failed: %v", err)
 		time.Sleep(2 * time.Second)
 	}
-	client33, err := Connect(5000, "10.1.0.33", 9635, localIP, getLocalPort(9635)) //fins.NewClient(clientAddr, plcAddr)
+	testValue := false
+	data := []bool{testValue}
+	err = client32.WriteBits(mapping.MemoryAreaHRBit, 57, 10, data)
 	if err != nil {
-		log.Printf("❌ Connection failed: %v", err)
-		time.Sleep(2 * time.Second)
+		log.Printf("failed to write BOOL value to %s (address %d.%d): %v",
+			"circulationFan", 57, 10, err)
 	}
+	log.Printf("✅ Successfully wrote value %v to %s (address %d.%d)",
+		testValue, "circulationFan", 57, 10)
 
-	// Write/Read from 10.1.0.33
-	floatTest := float32(42.5)
-	uintTestValue, err := ConvertFloat32ToOmronData(floatTest)
-	if err != nil {
-		log.Printf("Error in ConvertFloat32ToOmronData(floatTest), where floatTest=%f", floatTest)
-	}
+	// // Write/Read from 10.1.0.33
+	// floatTest := float32(42.5)
+	// uintTestValue, err := ConvertFloat32ToOmronData(floatTest)
+	// if err != nil {
+	// 	log.Printf("Error in ConvertFloat32ToOmronData(floatTest), where floatTest=%f", floatTest)
+	// }
 
-	err = client33.WriteWords(mapping.MemoryAreaDMWord, 8172, uintTestValue)
-	if err != nil {
-		log.Printf("failed to write REAL value to fanSpeed (address 8172)")
-	}
+	// err = client33.WriteWords(mapping.MemoryAreaDMWord, 8172, uintTestValue)
+	// if err != nil {
+	// 	log.Printf("failed to write REAL value to fanSpeed (address 8172)")
+	// }
 
-	//reading the value back
-	readValue, err := client33.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
-	if err != nil {
-		log.Printf("failed to read REAL value to fanSpeed (address 8172)")
-	} else {
-		log.Printf("✅ Successfully read value")
-	}
+	// //reading the value back
+	// readValue, err := client33.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
+	// if err != nil {
+	// 	log.Printf("failed to read REAL value to fanSpeed (address 8172)")
+	// } else {
+	// 	log.Printf("✅ Successfully read value")
+	// }
 
-	// Write/Read from 10.1.0.32
-	err = client32.WriteWords(mapping.MemoryAreaDMWord, 8172, readValue)
-	if err != nil {
-		log.Printf("failed to write REAL value to fanSpeed (address 8172)")
-	}
+	// // Write/Read from 10.1.0.32
+	// err = client32.WriteWords(mapping.MemoryAreaDMWord, 8172, readValue)
+	// if err != nil {
+	// 	log.Printf("failed to write REAL value to fanSpeed (address 8172)")
+	// }
 
-	//reading the value back
-	readValue32, err := client32.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
-	if err != nil {
-		log.Printf("failed to read REAL value to fanSpeed (address 8172)")
-	}
-	log.Printf("✅ Successfully read value")
+	// //reading the value back
+	// readValue32, err := client32.ReadWords(mapping.MemoryAreaDMWord, 8172, 2)
+	// if err != nil {
+	// 	log.Printf("failed to read REAL value to fanSpeed (address 8172)")
+	// }
+	// log.Printf("✅ Successfully read value")
 
-	readvalueFloat, _ := ConvertToFloat32(readValue32)
+	// readvalueFloat, _ := ConvertToFloat32(readValue32)
 
-	log.Printf("Read value as float32: %f (should be 42.5)", readvalueFloat)
+	// log.Printf("Read value as float32: %f (should be 42.5)", readvalueFloat)
 
 	defer func() {
 		client32.Close()
-		client33.Close()
+		// client33.Close()
 	}()
 
 }

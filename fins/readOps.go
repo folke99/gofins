@@ -32,6 +32,7 @@ func (c *Client) ReadWords(memoryArea byte, address uint16, readCount uint16) ([
 	return data, nil
 }
 
+// ReadBytes Reads bytes from the PLC data area
 func (c *Client) ReadBytes(memoryArea byte, address uint16, byteCount uint16) ([]byte, error) {
 	if !mapping.CheckIsWordMemoryArea(memoryArea) {
 		return nil, IncompatibleMemoryAreaError{memoryArea}
@@ -103,6 +104,7 @@ func (c *Client) ReadBits(memoryArea byte, address uint16, bitOffset byte, readC
 	return data, nil
 }
 
+// ReadPLCStatus reads the status from the PLC then returns the byte string.
 func (c *Client) ReadPLCStatus() (*Response, error) {
 	log.Println("📡 Attempting to read PLC status...") // TODO: Remove trace
 

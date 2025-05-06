@@ -1,3 +1,4 @@
+// Package main package mostly used for testing, can act as a mini connector for testing as well.
 package main
 
 import (

@@ -19,14 +19,15 @@ type Header struct {
 	sid uint8 // Service ID
 }
 
-// Header represents a FINS frame header structure
-type MagicFrame struct {
-	header     []byte // 46,49,4E,53 == FINS
-	length     []byte // init == 12 || magicHeader = 8 + finsHeader = 10 + command(differs depending on command)
-	command    []byte // init == 0, response == 1, read/write == 2
-	errorCode  []byte // 00, 00, 00, 00
-	clientNode []byte // Only for initial connection
-}
+//This is not used anywhere? originaly called MagicFrame
+// // Header represents a FINS frame header structure
+// type FINSFrame struct {
+// 	header     []byte // 46,49,4E,53 == FINS
+// 	length     []byte // init == 12 || FINSHeader = 8 + finsHeader = 10 + command(differs depending on command)
+// 	command    []byte // init == 0, response == 1, read/write == 2
+// 	errorCode  []byte // 00, 00, 00, 00
+// 	clientNode []byte // Only for initial connection
+// }
 
 const (
 	// ICF (Information Control Field) bits
@@ -36,10 +37,6 @@ const (
 	// Default values
 	DefaultGatewayCount uint8 = 0x02 //0x02
 	DefaultReserved     uint8 = 0x00
-
-	// Magic constants
-	InitMagicLength  uint8 = 0x0C
-	InitMagicCommand uint8 = 0x00
 )
 
 // defaultHeader creates a new Header with standard configuration

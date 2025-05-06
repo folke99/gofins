@@ -1,3 +1,4 @@
+// Package fins provides methods for communication with the FINS protocol
 package fins
 
 import (
@@ -38,6 +39,7 @@ const (
 	MAX_PACKET_SIZE          = 2048
 )
 
+// Creates a new FINS client and returns it
 func NewClient(localAddr, plcAddr Address) (*Client, error) {
 	c := new(Client)
 	c.plcAddr = plcAddr

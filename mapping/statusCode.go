@@ -1,3 +1,4 @@
+// Package mapping handles mapping of codes. such as, command codes, area codes, status codes, end codes.
 package mapping
 
 import "fmt"

@@ -46,6 +46,7 @@ func NewAddress(ip string, port int, network, node, unit byte) (Address, error) 
 	}, nil
 }
 
+// Returns a string with the address (network, node, unit, tcp)
 func (a Address) String() string {
 	return fmt.Sprintf("FINS Address: Network: %d, Node: %d, Unit: %d, TCP: %s",
 		a.finsAddress.network,
@@ -55,7 +56,6 @@ func (a Address) String() string {
 }
 
 // Clone creates a deep copy of the Address
-// Note: never used
 func (a Address) Clone() Address {
 	newTCPAddr := *a.tcpAddress // Create a copy of the TCPAddr
 	return Address{

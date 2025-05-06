@@ -134,6 +134,104 @@ Writes bits to the PLC data area
 
 For full documentation, visit [pkg.go.dev](https://pkg.go.dev/github.com/folke99/gofins).
 
+
+## Protocol Documentation
+The FINS protocol works by sending specific byte arrays to the plc which will then issue a response, either with data or with a confirmation byte array. Worth noting that the UDP and TCP protocol implementation differ somewhat from eachother, for UDP documentation and implementation i reffer to [l1va's GoFINS library](https://github.com/l1va/gofins).
+
+To create the initial connection with the TCP/FINS it is required to first send a handshake frame with the following structure:
+
+```go
+	initFrame := []byte{
+		0x46, 0x49, 0x4E, 0x53, // "FINS"
+		0x00, 0x00, 0x00, byte(length), // Length
+		0x00, 0x00, 0x00, byte(commandCode), // Command
+		0x00, 0x00, 0x00, 0x00, // Error code
+		0x00, 0x00, 0x00, 0x00 // Client node address (0 = auto-assign)
+	}
+```
+
+With this we should be able to establish a TCP/FINS connection.
+
+To send commands on this connection we need to follow the following flow.
+
+1. Send the init frame (without the Client node address bytes)
+```go
+	initFrame := []byte{
+		0x46, 0x49, 0x4E, 0x53, // "FINS"
+		0x00, 0x00, 0x00, byte(length), // Length
+		0x00, 0x00, 0x00, byte(commandCode), // Command
+		0x00, 0x00, 0x00, 0x00, // Error code
+	}
+```
+2. Without fetching a response from the init frame, send the command frame composed of header + command
+```go
+	return Header{
+		icf: 0x80,
+		rsv: DefaultReserved,
+		gct: DefaultGatewayCount,
+		dna: dst.network,
+		da1: dst.node,
+		da2: dst.unit,
+		sna: src.network,
+		sa1: src.node,
+		sa2: src.unit,
+		sid: serviceID,
+	}
+	commandBytes := []byte{0x06, 0x01}
+
+	fullFrame := header + command bytes
+```
+
+Here is an example of a full send command packet:
+```go
+	err := c.sendInitFrame(20, 2, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// FINS Header (10 bytes)
+	finsHeader := []byte{
+		0x80,       // ICF: Command, Response required
+		0x00,       // RSV: Reserved (Always 00)
+		0x02,       // GCT: Gateway count (Assuming direct connection)
+		0x00,       // DNA: Destination Network Address (0 if local)
+		c.dst.node, // DA1: Destination Node Address (Set this to match your PLC)
+		0x00,       // DA2: Destination Unit Address (0 for CPU)
+		0x00,       // SNA: Source Network Address (0 if local)
+		c.src.node, // SA1: Source Node Address (Client's node number, adjust if needed)
+		0x00,       // SA2: Source Unit Address (0 for CPU)
+		0x01,       // SID: Service ID (Can be any value, used to match requests)
+	}
+
+	// FINS Command (2 bytes) - Controller Status Read (0601)
+	command := []byte{0x06, 0x01}
+
+	// Combine all parts into a single packet
+	fullPacket := append(finsHeader, command...)
+
+
+```
+
+3. alocate a response channel and send it on the TCP connection.
+
+```go
+	c.resp[header.sid] = responseChan
+
+	_, err := c.conn.Write(fullPacket)
+```
+
+We should then get a reponse on the response channel. The response could look something like this:
+```
+46494E53000000100000000100000000000000EF00000020
+```
+
+following this structure:
+![alt text](image.png)
+
+Read more about command and response codes in the official documentation.
+
+
+For full documentation, visit [Omron Manual](https://www.myomron.com/downloads/1.Manuals/Networks/W227E12_FINS_Commands_Reference_Manual.pdf)
 ### Testing
 All testing and verification has been done with the PLC models:
 * Omron CJ2M-CPU32

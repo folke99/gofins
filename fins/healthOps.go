@@ -68,6 +68,7 @@ func (c *Client) Reconnect() error {
 	return fmt.Errorf("failed to reconnect after multiple attempts")
 }
 
+// Ping the PLC with a ReadClock() command to check availability
 func (c *Client) Ping() error {
 	log.Print("Pinging...")
 	_, err := c.ReadClock()
@@ -84,6 +85,7 @@ type PLCStatus struct {
 	FatalError FatalErrorCode
 }
 
+// Status sends a ReadPLCStatus() and returns the processed result or error
 func (c *Client) Status() (*PLCStatus, error) {
 	log.Printf("Getting status...") // TODO: remove trace
 	response, err := c.ReadPLCStatus()

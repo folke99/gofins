@@ -36,6 +36,7 @@ func (c *Client) WriteString(memoryArea byte, address uint16, s string) error {
 	return c.WriteBytes(memoryArea, address, b)
 }
 
+// WriteBytes writes bytes to the PLC's DM memory area
 func (c *Client) WriteBytes(memoryArea byte, address uint16, b []byte) error {
 	if !mapping.CheckIsWordMemoryArea(memoryArea) {
 		return IncompatibleMemoryAreaError{memoryArea}
